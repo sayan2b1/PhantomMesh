@@ -74,7 +74,7 @@ interface MessageDao {
     suspend fun deleteMessageById(messageId: String)
 
     /** Mark a message as deleted for everyone (WhatsApp style) */
-    @Query("UPDATE messages SET content = :deletedText, media_local_uri = null, media_cloud_url = null WHERE message_id = :messageId")
+    @Query("UPDATE messages SET content = :deletedText, media_local_uri = null, media_cloud_url = null, data_type = 'deleted', mime_type = null WHERE message_id = :messageId")
     suspend fun markMessageAsDeleted(messageId: String, deletedText: String = "🚫 This message was deleted")
 
     // ── DURESS: Nuclear data wipe ──────────────────────────────

@@ -26,6 +26,7 @@ class SessionManager @Inject constructor(
         private const val KEY_IS_DURESS = "session_is_duress"
         private const val KEY_IS_LOGGED_IN = "session_is_logged_in"
         private const val KEY_LOGIN_TIMESTAMP = "session_login_timestamp"
+        private const val KEY_BLUETOOTH_ONLY_MODE = "session_prefer_bluetooth_only"
 
         /** 24 Hours in milliseconds */
         const val SESSION_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000L
@@ -45,6 +46,9 @@ class SessionManager @Inject constructor(
 
     private val _isLoggedInFlow = MutableStateFlow(prefs.getBoolean(KEY_IS_LOGGED_IN, false))
     val isLoggedInFlow: StateFlow<Boolean> = _isLoggedInFlow.asStateFlow()
+
+    private val _bluetoothOnlyModeFlow = MutableStateFlow(prefs.getBoolean(KEY_BLUETOOTH_ONLY_MODE, false))
+    val bluetoothOnlyModeFlow: StateFlow<Boolean> = _bluetoothOnlyModeFlow.asStateFlow()
 
     /**
      * Persists session credentials immediately and stamps the current time.
@@ -73,6 +77,12 @@ class SessionManager @Inject constructor(
         return if (token.isNullOrBlank()) null else token
     }
     fun isDuress(): Boolean = prefs.getBoolean(KEY_IS_DURESS, false)
+    fun isBluetoothOnlyMode(): Boolean = prefs.getBoolean(KEY_BLUETOOTH_ONLY_MODE, false)
+
+    fun setBluetoothOnlyMode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_BLUETOOTH_ONLY_MODE, enabled).commit()
+        _bluetoothOnlyModeFlow.value = enabled
+    }
 
     /**
      * Checks if the stored session is valid and has not expired (within 24 hours).

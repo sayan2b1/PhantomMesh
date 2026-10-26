@@ -28,6 +28,19 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val isDuressSession: StateFlow<Boolean> get() = isDuress
 
+    val isBluetoothOnlyMode: StateFlow<Boolean> = sessionManager.bluetoothOnlyModeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setBluetoothOnlyMode(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionManager.setBluetoothOnlyMode(enabled)
+            _statusMessage.value = if (enabled)
+                "Bluetooth-only mode active: Wi-Fi disruptive upgrades blocked."
+            else
+                "Adaptive mesh active: Wi-Fi direct & Bluetooth both enabled."
+        }
+    }
+
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 

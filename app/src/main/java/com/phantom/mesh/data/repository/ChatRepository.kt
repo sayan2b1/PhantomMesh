@@ -228,6 +228,101 @@ class ChatRepository @Inject constructor(
     }
 
     /**
+     * Sends an encrypted AAC voice note message over cloud or offline mesh.
+     */
+    suspend fun sendVoiceMessage(
+        chatId: String,
+        targetId: String,
+        localFile: File,
+        durationMs: Long
+    ): MessageEntity = withContext(Dispatchers.IO) {
+        val currentUserId = sessionManager.getUserId() ?: "anon_sender"
+        val messageId = "voice_${UUID.randomUUID()}"
+        val now = System.currentTimeMillis()
+        val isOnline = networkStateManager.isInternetAvailable.value
+
+        val seconds = (durationMs / 1000).coerceAtLeast(1)
+        val durationFormatted = String.format("%d:%02d", seconds / 60, seconds % 60)
+        val preview = "🎤 Voice message ($durationFormatted)"
+
+        ensureChatExists(chatId, targetId, preview, now, if (isOnline) "cloud" else "mesh")
+
+        val message = MessageEntity(
+            messageId = messageId,
+            chatId = chatId,
+            senderId = currentUserId,
+            targetId = targetId,
+            content = preview,
+            dataType = "voice",
+            mediaLocalUri = localFile.absolutePath,
+            mediaSizeBytes = localFile.length(),
+            mimeType = "audio/mp4",
+            deliveryStatus = "saved",
+            hopCount = 0,
+            transportUsed = if (isOnline) "cloud" else "mesh",
+            timestamp = now
+        )
+        try {
+            messageDao.insertMessage(message)
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "Failed to insert voice message into Room: ${e.message}", e)
+        }
+
+        if (isOnline) {
+            var cloudUrl: String? = null
+            try {
+                val storageRef = storage.reference.child("ephemeral_voice/$chatId/$messageId/${localFile.name}")
+                val uploadTask = storageRef.putFile(android.net.Uri.fromFile(localFile)).await()
+                cloudUrl = uploadTask.storage.downloadUrl.await().toString()
+            } catch (e: Exception) {
+                android.util.Log.w("ChatRepository", "Storage upload not available for voice, using inline base64 fallback")
+            }
+
+            if (cloudUrl == null && localFile.length() < 750 * 1024) {
+                try {
+                    val bytes = localFile.readBytes()
+                    val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    cloudUrl = "data:audio/mp4;base64,$b64"
+                } catch (e: Exception) {
+                    android.util.Log.e("ChatRepository", "Failed encoding voice to base64: ${e.message}", e)
+                }
+            }
+
+            if (cloudUrl != null) {
+                val updatedMessage = message.copy(mediaCloudUrl = cloudUrl)
+                messageDao.updateMessage(updatedMessage)
+                routeViaCloud(updatedMessage)
+            } else {
+                routeViaMesh(message)
+            }
+
+            if (meshConnectionManager.hasActivePeers()) {
+                routeViaMesh(message)
+            }
+        } else {
+            routeViaMesh(message)
+        }
+
+        return@withContext message
+    }
+
+    private fun deleteLocalMediaFiles(messageId: String, localUri: String?) {
+        try {
+            if (!localUri.isNullOrBlank()) {
+                val f = File(localUri)
+                if (f.exists()) f.delete()
+            }
+            val mediaDir = File(context.filesDir, "received_media")
+            File(mediaDir, "$messageId.jpg").delete()
+            File(mediaDir, "$messageId.png").delete()
+            File(mediaDir, "$messageId.mp4").delete()
+            File(mediaDir, "$messageId.m4a").delete()
+            val voiceDir = File(context.filesDir, "voice_notes")
+            File(voiceDir, "$messageId.m4a").delete()
+        } catch (ignored: Exception) {}
+    }
+
+    /**
      * Deletes a message for everyone (WhatsApp style).
      * 1. Replaces content with "🚫 This message was deleted" locally and deletes media file.
      * 2. If online: updates Firestore message document and parent chat.
@@ -236,15 +331,10 @@ class ChatRepository @Inject constructor(
     suspend fun deleteMessageForEveryone(chatId: String, messageId: String, targetId: String) = withContext(Dispatchers.IO) {
         val deletedNotice = "🚫 This message was deleted"
 
-        // 1. Mark as deleted locally in Room DB
+        // 1. Mark as deleted locally in Room DB and purge local media
+        val existing = messageDao.getMessageById(messageId)
+        deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
         messageDao.markMessageAsDeleted(messageId, deletedNotice)
-
-        // Delete any local media file
-        try {
-            val mediaDir = File(context.filesDir, "received_media")
-            File(mediaDir, "$messageId.jpg").delete()
-            File(mediaDir, "$messageId.png").delete()
-        } catch (ignored: Exception) {}
 
         // Update chat list preview
         try {
@@ -262,6 +352,9 @@ class ChatRepository @Inject constructor(
                         mapOf(
                             "content" to deletedNotice,
                             "mediaCloudUrl" to null,
+                            "mediaLocalUri" to null,
+                            "dataType" to "deleted",
+                            "mimeType" to null,
                             "isDeleted" to true
                         )
                     ).await()
@@ -269,6 +362,14 @@ class ChatRepository @Inject constructor(
                 firestore.collection("chats")
                     .document(chatId)
                     .update("lastMessage", deletedNotice)
+
+                existing?.mediaCloudUrl?.let { cloudUrl ->
+                    if (cloudUrl.startsWith("http")) {
+                        try {
+                            storage.getReferenceFromUrl(cloudUrl).delete().await()
+                        } catch (ignored: Exception) {}
+                    }
+                }
             } catch (e: Exception) {
                 android.util.Log.w("ChatRepository", "Failed to update deleted message in Firestore: ${e.message}")
             }
@@ -423,12 +524,11 @@ class ChatRepository @Inject constructor(
         // Handle remote delete command
         if (packet.dataType == "delete_msg") {
             val deletedMessageId = packet.data
+            val existing = messageDao.getMessageById(deletedMessageId)
+            deleteLocalMediaFiles(deletedMessageId, existing?.mediaLocalUri)
             messageDao.markMessageAsDeleted(deletedMessageId, "🚫 This message was deleted")
-            try {
-                val mediaDir = File(context.filesDir, "received_media")
-                File(mediaDir, "$deletedMessageId.jpg").delete()
-                File(mediaDir, "$deletedMessageId.png").delete()
-            } catch (ignored: Exception) {}
+            val targetChatId = existing?.chatId ?: generateChatId(packet.senderId, currentUsername ?: currentUserId)
+            chatDao.updateLastMessage(targetChatId, "🚫 This message was deleted", packet.timestamp, "mesh")
             return
         }
 
@@ -542,7 +642,13 @@ class ChatRepository @Inject constructor(
 
                             val isDeleted = doc.getBoolean("isDeleted") == true || doc.getString("content") == "🚫 This message was deleted"
                             if (isDeleted) {
+                                val existing = messageDao.getMessageById(messageId)
+                                deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
                                 messageDao.markMessageAsDeleted(messageId, "🚫 This message was deleted")
+                                val currentChatId = doc.getString("chatId") ?: existing?.chatId
+                                if (currentChatId != null) {
+                                    chatDao.updateLastMessage(currentChatId, "🚫 This message was deleted", System.currentTimeMillis(), "cloud")
+                                }
                                 continue
                             }
 
@@ -579,10 +685,23 @@ class ChatRepository @Inject constructor(
                                 } catch (e: Exception) {
                                     android.util.Log.e("ChatRepository", "Error decoding cloud base64 image: ${e.message}", e)
                                 }
+                            } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio")) {
+                                try {
+                                    val b64 = mediaCloudUrl.substringAfter("base64,")
+                                    val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                                    val voiceDir = File(context.filesDir, "voice_notes").apply { mkdirs() }
+                                    val localFile = File(voiceDir, "${messageId}.m4a")
+                                    localFile.writeBytes(bytes)
+                                    localSavedUri = localFile.absolutePath
+                                    android.util.Log.i("ChatRepository", "Saved received cloud voice note to: $localSavedUri (${bytes.size} bytes)")
+                                } catch (e: Exception) {
+                                    android.util.Log.e("ChatRepository", "Error decoding cloud voice note: ${e.message}", e)
+                                }
                             }
 
+                            val isVoice = dataType == "voice" || (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio"))
                             val isMedia = dataType == "image" || (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:image"))
-                            val previewText = if (isMedia) "[Image Attachment]" else (content ?: "[File]")
+                            val previewText = if (isVoice) (content ?: "🎤 Voice message") else if (isMedia) "[Image Attachment]" else (content ?: "[File]")
 
                             android.util.Log.d("ChatRepository", "Cloud message received: id=$messageId from=$displayPeer chatId=$chatId")
 
@@ -669,6 +788,17 @@ class ChatRepository @Inject constructor(
                             for (doc in snapshot.documents) {
                                 val messageId = doc.getString("messageId") ?: continue
                                 val senderId = doc.getString("senderId") ?: continue
+                                val isDeleted = doc.getBoolean("isDeleted") == true || doc.getString("content") == "🚫 This message was deleted"
+
+                                if (isDeleted) {
+                                    val existing = messageDao.getMessageById(messageId)
+                                    deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
+                                    messageDao.markMessageAsDeleted(messageId, "🚫 This message was deleted")
+                                    val currentChatId = doc.getString("chatId") ?: chat.chatId
+                                    chatDao.updateLastMessage(currentChatId, "🚫 This message was deleted", System.currentTimeMillis(), "cloud")
+                                    continue
+                                }
+
                                 if (senderId == currentUserId) continue
                                 if (messageDao.getMessageById(messageId) != null) continue
 
@@ -694,16 +824,22 @@ class ChatRepository @Inject constructor(
                                     } catch (e: Exception) {
                                         android.util.Log.e("ChatRepository", "Error decoding polling image: ${e.message}", e)
                                     }
+                                } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio")) {
+                                    try {
+                                        val b64 = mediaCloudUrl.substringAfter("base64,")
+                                        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                                        val voiceDir = File(context.filesDir, "voice_notes").apply { mkdirs() }
+                                        val localFile = File(voiceDir, "${messageId}.m4a")
+                                        localFile.writeBytes(bytes)
+                                        localSavedUri = localFile.absolutePath
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("ChatRepository", "Error decoding polling voice note: ${e.message}", e)
+                                    }
                                 }
 
-                                val isDeleted = doc.getBoolean("isDeleted") == true || content == "🚫 This message was deleted"
-                                if (isDeleted) {
-                                    messageDao.markMessageAsDeleted(messageId, "🚫 This message was deleted")
-                                    continue
-                                }
-
+                                val isVoice = dataType == "voice" || (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio"))
                                 val isMedia = dataType == "image" || (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:image"))
-                                val previewText = if (isMedia) "[Image Attachment]" else (content ?: "[File]")
+                                val previewText = if (isVoice) (content ?: "🎤 Voice message") else if (isMedia) "[Image Attachment]" else (content ?: "[File]")
 
                                 ensureChatExists(chatId, senderUsername, previewText, timestamp, "cloud")
 
