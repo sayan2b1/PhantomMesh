@@ -47,6 +47,14 @@ class MainActivity : ComponentActivity() {
     ) { _ ->
         if (canStartForegroundMeshService()) {
             startMeshService()
+            if (sessionManager.isSessionValid()) {
+                val userId = sessionManager.getUserId()
+                val username = sessionManager.getUsername() ?: "Anonymous"
+                if (userId != null) {
+                    meshConnectionManager.setLocalIdentity(userId, username)
+                    meshConnectionManager.startMesh()
+                }
+            }
         } else {
             Log.w("MainActivity", "Required permissions not fully granted; mesh foreground service held back")
         }

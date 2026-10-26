@@ -94,6 +94,7 @@ fun ChatListScreen(
     val currentUsername by viewModel.currentUsername.collectAsState()
     val currentUserId by viewModel.currentUserId.collectAsState()
     val isBtOnly by viewModel.isBluetoothOnlyMode.collectAsState()
+    val connectedPeers by viewModel.connectedPeers.collectAsState()
 
     val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
     val radarRotation by infiniteTransition.animateFloat(
@@ -252,6 +253,90 @@ fun ChatListScreen(
                 )
             }
 
+            if (connectedPeers.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(DarkCard)
+                        .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Bluetooth,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "NEARBY MESH PEERS (${connectedPeers.size})",
+                                color = NeonCyan,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Text(
+                            text = "Tap to chat",
+                            color = TextMuted,
+                            fontSize = 10.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    androidx.compose.foundation.lazy.LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(connectedPeers, key = { it.endpointId }) { peer ->
+                            val peerTarget = peer.displayName.ifBlank { peer.userId ?: peer.endpointId }
+                            val myIdentity = currentUsername ?: currentUserId ?: "user"
+                            val chatId = com.phantom.mesh.data.repository.ChatRepository.generateChatId(myIdentity, peerTarget)
+
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(NeonCyan.copy(alpha = 0.12f))
+                                    .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+                                    .clickable {
+                                        onChatClick(chatId, peerTarget)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(com.phantom.mesh.ui.theme.NeonGreen)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = peerTarget,
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "CHAT",
+                                    color = NeonCyan,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             if (chats.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -312,6 +397,31 @@ fun ChatListScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    if (connectedPeers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Connected nearby peers:", fontSize = 12.sp, color = TextMuted)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        androidx.compose.foundation.lazy.LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(connectedPeers, key = { it.endpointId }) { peer ->
+                                val target = peer.displayName.ifBlank { peer.userId ?: peer.endpointId }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(NeonCyan.copy(alpha = 0.15f))
+                                        .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                                        .clickable {
+                                            newChatPeerId = target
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(target, color = NeonCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                }
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {

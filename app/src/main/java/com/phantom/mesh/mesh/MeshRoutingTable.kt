@@ -107,14 +107,30 @@ class MeshRoutingTable @Inject constructor() {
      * Associate a Nearby Connections endpoint with a PhantomMesh user ID or username.
      * Called after the peer sends its user identity announcement.
      */
-    fun associateUserId(endpointId: String, userId: String) {
+    fun associateIdentity(endpointId: String, userId: String, displayName: String? = null) {
         val cleanUser = userId.trim().lowercase()
-        directConnections[endpointId]?.let { node ->
-            directConnections[endpointId] = node.copy(userId = cleanUser)
-            userToEndpoint[cleanUser] = endpointId
-            userToEndpoint[userId] = endpointId
-            emitTopologyUpdate()
+        val existing = directConnections[endpointId]
+        val resolvedName = if (!displayName.isNullOrBlank() && !displayName.startsWith("Peer-") && !displayName.equals("Anonymous", ignoreCase = true)) {
+            displayName
+        } else {
+            existing?.displayName ?: displayName ?: "Peer-${endpointId.take(4)}"
         }
+        val node = (existing ?: MeshNode(endpointId = endpointId, connectionType = "bluetooth")).copy(
+            userId = cleanUser,
+            displayName = resolvedName
+        )
+        directConnections[endpointId] = node
+        userToEndpoint[cleanUser] = endpointId
+        userToEndpoint[userId] = endpointId
+        if (!displayName.isNullOrBlank()) {
+            userToEndpoint[displayName.trim().lowercase()] = endpointId
+            userToEndpoint[displayName.trim()] = endpointId
+        }
+        emitTopologyUpdate()
+    }
+
+    fun associateUserId(endpointId: String, userId: String) {
+        associateIdentity(endpointId, userId, null)
     }
 
     /**
@@ -123,6 +139,7 @@ class MeshRoutingTable @Inject constructor() {
     fun removePeer(endpointId: String) {
         val node = directConnections.remove(endpointId)
         node?.userId?.let { userToEndpoint.remove(it) }
+        node?.displayName?.let { userToEndpoint.remove(it.trim().lowercase()) }
 
         // Also remove this peer from other nodes' reachablePeers sets
         directConnections.values.forEach { peer ->
@@ -155,18 +172,25 @@ class MeshRoutingTable @Inject constructor() {
      * Resolution order:
      * 1. Direct connection to target
      * 2. Indirect route via a peer that claims reachability
-     * 3. null (caller should broadcast/flood)
+     * 3. Direct 1-to-1 link if exactly 1 peer is connected
+     * 4. null (caller should broadcast/flood)
      */
     fun resolveNextHop(targetUserId: String): String? {
         val cleanTarget = targetUserId.trim().lowercase()
-        // 1. Direct connection by userId mapping
+        // 0. Direct endpointId match
+        if (directConnections.containsKey(targetUserId)) return targetUserId
+        if (directConnections.containsKey(cleanTarget)) return cleanTarget
+
+        // 1. Direct connection by userId / username / displayName mapping
         userToEndpoint[cleanTarget]?.let { return it }
         userToEndpoint[targetUserId]?.let { return it }
 
         // 2. Direct connection matching node displayName or userId
         for ((endpointId, node) in directConnections) {
             if (node.displayName.equals(cleanTarget, ignoreCase = true) ||
-                node.userId?.equals(cleanTarget, ignoreCase = true) == true) {
+                node.displayName.equals(targetUserId, ignoreCase = true) ||
+                node.userId?.equals(cleanTarget, ignoreCase = true) == true ||
+                node.userId?.equals(targetUserId, ignoreCase = true) == true) {
                 return endpointId
             }
         }
@@ -178,7 +202,12 @@ class MeshRoutingTable @Inject constructor() {
             }
         }
 
-        // 4. No known route
+        // 4. In a direct 1-to-1 link, if only 1 peer is connected, route directly to that peer!
+        if (directConnections.size == 1) {
+            return directConnections.keys().nextElement()
+        }
+
+        // 5. No known route
         return null
     }
 

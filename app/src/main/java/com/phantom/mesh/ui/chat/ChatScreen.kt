@@ -415,17 +415,22 @@ fun MessageBubble(
                             VoiceMessageBubbleContent(
                                 message = message,
                                 voicePlayerManager = voicePlayerManager,
-                                isMe = isMe
+                                isMe = isMe,
+                                onLongClick = onLongClick
                             )
                         } else if (isImage) {
-                            ImageMessageContent(message = message)
+                            ImageMessageContent(message = message, onLongClick = onLongClick)
                         } else if (isVideo) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(120.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.Black.copy(alpha = 0.4f)),
+                                    .background(Color.Black.copy(alpha = 0.4f))
+                                    .combinedClickable(
+                                        onClick = {},
+                                        onLongClick = onLongClick
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -500,11 +505,13 @@ fun MessageBubble(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun VoiceMessageBubbleContent(
     message: MessageEntity,
     voicePlayerManager: VoicePlayerManager,
-    isMe: Boolean
+    isMe: Boolean,
+    onLongClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activePlayingId by voicePlayerManager.activePlayingMessageId.collectAsState()
@@ -527,6 +534,12 @@ fun VoiceMessageBubbleContent(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .combinedClickable(
+                onClick = {
+                    voicePlayerManager.togglePlay(context, message.messageId, message.mediaLocalUri, message.mediaCloudUrl)
+                },
+                onLongClick = onLongClick
+            )
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -848,9 +861,11 @@ fun ChatInputBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ImageMessageContent(
-    message: MessageEntity
+    message: MessageEntity,
+    onLongClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var bitmap by remember(message.messageId, message.mediaLocalUri, message.mediaCloudUrl) {
@@ -902,7 +917,10 @@ fun ImageMessageContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .clickable { showFullscreenDialog = true }
+                    .combinedClickable(
+                        onClick = { showFullscreenDialog = true },
+                        onLongClick = onLongClick
+                    )
             ) {
                 Image(
                     bitmap = bitmap!!.asImageBitmap(),
@@ -923,10 +941,13 @@ fun ImageMessageContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Tap to enlarge",
+                    text = "Tap to enlarge • Hold to delete",
                     fontSize = 10.sp,
                     color = TextMuted,
-                    modifier = Modifier.clickable { showFullscreenDialog = true }
+                    modifier = Modifier.combinedClickable(
+                        onClick = { showFullscreenDialog = true },
+                        onLongClick = onLongClick
+                    )
                 )
 
                 Row(
@@ -938,7 +959,7 @@ fun ImageMessageContent(
                             val success = HardwareStateUtil.saveBitmapToGallery(
                                 context,
                                 bitmap!!,
-                                "Phantom_${message.messageId.take(8)}"
+                                "Phantom_${message.messageId}"
                             )
                             if (success) {
                                 Toast.makeText(
@@ -1023,7 +1044,7 @@ fun ImageMessageContent(
                                     val success = HardwareStateUtil.saveBitmapToGallery(
                                         context,
                                         bitmap!!,
-                                        "Phantom_${message.messageId.take(8)}"
+                                        "Phantom_${message.messageId}"
                                     )
                                     if (success) {
                                         Toast.makeText(
@@ -1061,7 +1082,11 @@ fun ImageMessageContent(
                 .fillMaxWidth()
                 .height(140.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black.copy(alpha = 0.3f)),
+                .background(Color.Black.copy(alpha = 0.3f))
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = onLongClick
+                ),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1076,15 +1101,24 @@ fun ImageMessageContent(
         }
         Spacer(modifier = Modifier.height(4.dp))
     } else if (!message.mediaCloudUrl.isNullOrBlank() && message.mediaCloudUrl.startsWith("http")) {
-        AsyncImage(
-            model = message.mediaCloudUrl,
-            contentDescription = "Image attachment",
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 240.dp)
-                .clip(RoundedCornerShape(12.dp)),
-            contentScale = ContentScale.Crop
-        )
+                .clip(RoundedCornerShape(12.dp))
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = onLongClick
+                )
+        ) {
+            AsyncImage(
+                model = message.mediaCloudUrl,
+                contentDescription = "Image attachment",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp),
+                contentScale = ContentScale.Crop
+            )
+        }
         Spacer(modifier = Modifier.height(6.dp))
     }
 }

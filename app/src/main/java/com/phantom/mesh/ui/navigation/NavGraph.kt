@@ -115,9 +115,19 @@ fun PhantomNavGraph(
 
         composable(Destinations.TOPOLOGY) {
             val viewModel: TopologyViewModel = hiltViewModel()
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val sessionManager = androidx.compose.runtime.remember {
+                com.phantom.mesh.data.local.preferences.SessionManager(context)
+            }
             TopologyScreen(
                 viewModel = viewModel,
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onNodeClick = { node ->
+                    val myId = sessionManager.getUsername() ?: sessionManager.getUserId() ?: "anon"
+                    val peerTarget = node.displayName.ifBlank { node.userId ?: node.endpointId }
+                    val chatId = com.phantom.mesh.data.repository.ChatRepository.generateChatId(myId, peerTarget)
+                    navController.navigate(Destinations.chatRoute(chatId, peerTarget))
+                }
             )
         }
 

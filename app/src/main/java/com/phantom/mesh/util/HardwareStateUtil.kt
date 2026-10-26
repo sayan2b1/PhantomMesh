@@ -1,6 +1,7 @@
 package com.phantom.mesh.util
 
 import android.bluetooth.BluetoothManager
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -117,8 +118,9 @@ object HardwareStateUtil {
      */
     fun saveBitmapToGallery(context: Context, bitmap: Bitmap, fileName: String = "PhantomMesh_${System.currentTimeMillis()}"): Boolean {
         val resolver = context.contentResolver
+        val cleanName = if (fileName.endsWith(".jpg", ignoreCase = true)) fileName else "$fileName.jpg"
         val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "$fileName.jpg")
+            put(MediaStore.MediaColumns.DISPLAY_NAME, cleanName)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/PhantomMesh")
@@ -146,6 +148,93 @@ object HardwareStateUtil {
                 resolver.delete(uri, null, null)
             } catch (ignored: Exception) {}
             false
+        }
+    }
+
+    /**
+     * Purges saved media files (Images, Video, Audio) from device public MediaStore
+     * and external public directories matching the message ID when a message is deleted for everyone.
+     */
+    fun deleteFromMediaStore(context: Context, messageId: String) {
+        val resolver = context.contentResolver
+        val cleanUuid = messageId.removePrefix("media_").removePrefix("msg_").removePrefix("voice_").removePrefix("video_").trim()
+        val shortId = if (messageId.length >= 8) messageId.take(8) else messageId
+        val shortUuid = if (cleanUuid.length >= 8) cleanUuid.take(8) else cleanUuid
+
+        val tokens = listOfNotNull(
+            messageId,
+            shortId,
+            cleanUuid.ifBlank { null },
+            shortUuid.ifBlank { null }
+        ).filter { it.length >= 4 }.distinct()
+
+        // Helper to query and delete individual MediaStore items by specific ContentUri
+        fun purgeCollection(collectionUri: android.net.Uri, mediaType: String) {
+            try {
+                val selectionBuilder = StringBuilder()
+                val argsList = mutableListOf<String>()
+                tokens.forEachIndexed { index, token ->
+                    if (index > 0) selectionBuilder.append(" OR ")
+                    selectionBuilder.append("${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?")
+                    argsList.add("%$token%")
+                }
+                val selection = selectionBuilder.toString()
+                val args = argsList.toTypedArray()
+
+                val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+                resolver.query(collectionUri, projection, selection, args, null)?.use { cursor ->
+                    val idCol = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                    val nameCol = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    while (cursor.moveToNext()) {
+                        if (idCol != -1) {
+                            val id = cursor.getLong(idCol)
+                            val name = if (nameCol != -1) cursor.getString(nameCol) else id.toString()
+                            val itemUri = ContentUris.withAppendedId(collectionUri, id)
+                            try {
+                                val deleted = resolver.delete(itemUri, null, null)
+                                android.util.Log.i("HardwareStateUtil", "Deleted MediaStore $mediaType item: $name (rows=$deleted)")
+                            } catch (e: Exception) {
+                                android.util.Log.w("HardwareStateUtil", "Error deleting MediaStore item $name: ${e.message}")
+                            }
+                        }
+                    }
+                }
+
+                // Also attempt batch delete as backup
+                resolver.delete(collectionUri, selection, args)
+            } catch (e: Exception) {
+                android.util.Log.w("HardwareStateUtil", "Error in purgeCollection ($mediaType): ${e.message}")
+            }
+        }
+
+        // 1. Purge Images, Videos, and Audio from MediaStore
+        purgeCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image")
+        purgeCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video")
+        purgeCollection(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio")
+
+        // 2. Direct filesystem sweep in public PhantomMesh folders
+        val publicFolders = listOf(
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "PhantomMesh"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "PhantomMesh"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "PhantomMesh"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "PhantomMesh"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "PhantomMesh")
+        )
+
+        for (folder in publicFolders) {
+            try {
+                if (folder.exists() && folder.isDirectory) {
+                    folder.listFiles()?.forEach { file ->
+                        val matches = tokens.any { token -> file.name.contains(token, ignoreCase = true) }
+                        if (matches) {
+                            val deleted = file.delete()
+                            android.util.Log.i("HardwareStateUtil", "Physically deleted public file: ${file.name} (success=$deleted)")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("HardwareStateUtil", "Error sweeping public folder ${folder.name}: ${e.message}")
+            }
         }
     }
 }
