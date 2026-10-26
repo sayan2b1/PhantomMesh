@@ -489,6 +489,18 @@ class ChatRepository @Inject constructor(
                 } else {
                     message.content ?: ""
                 }
+            } else if (message.dataType == "voice") {
+                if (!message.mediaLocalUri.isNullOrBlank()) {
+                    val file = File(message.mediaLocalUri)
+                    if (file.exists() && file.length() < 2 * 1024 * 1024) {
+                        val b64 = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                        "data:audio/mp4;base64,$b64"
+                    } else {
+                        message.content ?: ""
+                    }
+                } else {
+                    message.content ?: ""
+                }
             } else {
                 message.content ?: ""
             }
@@ -537,6 +549,7 @@ class ChatRepository @Inject constructor(
         val chatId = generateChatId(senderIdentity, myIdentity)
 
         val isImage = packet.dataType == "image" || packet.data.startsWith("data:image")
+        val isVoice = packet.dataType == "voice" || packet.data.startsWith("data:audio")
         var localSavedPath: String? = null
         var cloudSource: String? = null
 
@@ -553,9 +566,22 @@ class ChatRepository @Inject constructor(
             } catch (e: Exception) {
                 android.util.Log.e("ChatRepository", "Failed saving incoming mesh image: ${e.message}", e)
             }
+        } else if (isVoice && packet.data.startsWith("data:")) {
+            cloudSource = packet.data
+            try {
+                val b64 = packet.data.substringAfter("base64,")
+                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                val voiceDir = File(context.filesDir, "voice_notes").apply { mkdirs() }
+                val localFile = File(voiceDir, "${packet.packetId}.m4a")
+                localFile.writeBytes(bytes)
+                localSavedPath = localFile.absolutePath
+                android.util.Log.i("ChatRepository", "Saved incoming mesh voice note to: $localSavedPath (${bytes.size} bytes)")
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "Failed saving incoming mesh voice note: ${e.message}", e)
+            }
         }
 
-        val displayPreview = if (isImage) "[Image Attachment]" else packet.data
+        val displayPreview = if (isImage) "[Image Attachment]" else if (isVoice) "🎤 Voice message" else packet.data
         ensureChatExists(chatId, senderIdentity, displayPreview, packet.timestamp, "mesh")
 
         val incomingMessage = MessageEntity(
@@ -563,12 +589,12 @@ class ChatRepository @Inject constructor(
             chatId = chatId,
             senderId = packet.senderId,
             targetId = currentUserId,
-            content = if (isImage) "attachment_${packet.packetId.take(8)}.jpg" else packet.data,
-            dataType = if (isImage) "image" else packet.dataType,
+            content = if (isImage) "attachment_${packet.packetId.take(8)}.jpg" else if (isVoice) "🎤 Voice message" else packet.data,
+            dataType = if (isImage) "image" else if (isVoice) "voice" else packet.dataType,
             mediaLocalUri = localSavedPath,
             mediaCloudUrl = cloudSource,
             mediaSizeBytes = packet.payloadSize,
-            mimeType = if (isImage) "image/jpeg" else null,
+            mimeType = if (isImage) "image/jpeg" else if (isVoice) "audio/mp4" else null,
             deliveryStatus = "delivered", // Already delivered to this target device
             hopCount = packet.hopCount,
             transportUsed = "mesh",
