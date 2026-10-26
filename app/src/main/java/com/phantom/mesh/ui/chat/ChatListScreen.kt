@@ -18,6 +18,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.border
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.ui.draw.rotate
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
@@ -86,6 +93,18 @@ fun ChatListScreen(
     val isDuress by viewModel.isDuressSession.collectAsState()
     val currentUsername by viewModel.currentUsername.collectAsState()
     val currentUserId by viewModel.currentUserId.collectAsState()
+    val isBtOnly by viewModel.isBluetoothOnlyMode.collectAsState()
+
+    val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
+    val radarRotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 6000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "RadarAngle"
+    )
 
     var showNewChatDialog by remember { mutableStateOf(false) }
     var newChatPeerId by remember { mutableStateOf("") }
@@ -139,9 +158,14 @@ fun ChatListScreen(
 
                     Spacer(modifier = Modifier.width(4.dp))
 
-                    // Topology Radar Button
+                    // Topology Radar Button with live sweep animation
                     IconButton(onClick = onNavigateTopology) {
-                        Icon(Icons.Default.Hub, contentDescription = "Mesh Topology", tint = NeonCyan)
+                        Icon(
+                            imageVector = Icons.Default.Hub,
+                            contentDescription = "Mesh Topology",
+                            tint = NeonCyan,
+                            modifier = Modifier.rotate(radarRotation)
+                        )
                     }
 
                     // Proximity Drop Zone Button
@@ -174,11 +198,37 @@ fun ChatListScreen(
                 .padding(padding)
         ) {
             // Hardware state warning banners for Wi-Fi, Bluetooth, and Location
-            if (!isWifiEnabled) {
+            if (isBtOnly) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(NeonCyan.copy(alpha = 0.08f))
+                        .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Bluetooth,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Bluetooth-Only Mode Active (Wi-Fi kept OFF for testing)",
+                            color = NeonCyan,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            } else if (!isWifiEnabled && !isBtEnabled) {
                 MeshHardwareWarningBanner(
                     icon = Icons.Default.Wifi,
-                    title = "Wi-Fi Hardware is Turned OFF",
-                    message = "Turn on your phone's Wi-Fi toggle (no internet/router needed). Offline mesh requires the Wi-Fi radio to link phones directly.",
+                    title = "All Mesh Radios are OFF",
+                    message = "Turn on Bluetooth or Wi-Fi to allow your phone to discover and link with local mesh peers.",
                     actionText = "TURN ON",
                     onAction = { HardwareStateUtil.openWifiSettings(context) }
                 )
@@ -238,6 +288,7 @@ fun ChatListScreen(
                     items(chats, key = { it.chatId }) { chat ->
                         ChatItem(
                             chat = chat,
+                            modifier = Modifier.animateItem(),
                             onClick = { onChatClick(chat.chatId, chat.participants) }
                         )
                     }
@@ -291,6 +342,7 @@ fun ChatListScreen(
 @Composable
 fun ChatItem(
     chat: ChatEntity,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val timeFormatted = remember(chat.lastMessageTimestamp) {
@@ -299,7 +351,7 @@ fun ChatItem(
     }
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),

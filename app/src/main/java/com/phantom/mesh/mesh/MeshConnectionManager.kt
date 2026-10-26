@@ -5,6 +5,7 @@ import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionOptions
 import com.google.android.gms.nearby.connection.ConnectionResolution
 import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
@@ -14,6 +15,7 @@ import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
+import com.phantom.mesh.util.HardwareStateUtil
 import com.phantom.mesh.data.local.dao.MeshQueueDao
 import com.phantom.mesh.data.local.dao.MessageDao
 import com.phantom.mesh.data.local.entity.MeshQueueEntity
@@ -245,8 +247,10 @@ class MeshConnectionManager @Inject constructor(
         if (isAdvertising) return
 
         try {
+            val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
             val options = AdvertisingOptions.Builder()
                 .setStrategy(Strategy.P2P_CLUSTER)
+                .setDisruptiveUpgrade(!isBtOnly)
                 .build()
 
             connectionsClient.startAdvertising(
@@ -338,13 +342,19 @@ class MeshConnectionManager @Inject constructor(
             val peerKey = if (info.endpointName.isNotBlank()) info.endpointName.lowercase().trim() else endpointId
             val shouldInitiate = if (myKey != peerKey) myKey < peerKey else localDisplayName < endpointId
 
+            val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
+            val connectionOptions = ConnectionOptions.Builder()
+                .setDisruptiveUpgrade(!isBtOnly)
+                .build()
+
             if (shouldInitiate) {
                 if (pendingConnections.add(endpointId)) {
                     android.util.Log.i(TAG, "Initiating connection to peer: $endpointId ($peerName) [myKey < peerKey]")
                     connectionsClient.requestConnection(
                         localDisplayName,
                         endpointId,
-                        connectionLifecycleCallback
+                        connectionLifecycleCallback,
+                        connectionOptions
                     ).addOnSuccessListener {
                         android.util.Log.i(TAG, "Requested connection to peer: $endpointId")
                     }.addOnFailureListener { e ->
@@ -362,7 +372,8 @@ class MeshConnectionManager @Inject constructor(
                         connectionsClient.requestConnection(
                             localDisplayName,
                             endpointId,
-                            connectionLifecycleCallback
+                            connectionLifecycleCallback,
+                            connectionOptions
                         ).addOnFailureListener { e ->
                             pendingConnections.remove(endpointId)
                             android.util.Log.w(TAG, "Fallback request failed: ${e.message}")
@@ -407,8 +418,14 @@ class MeshConnectionManager @Inject constructor(
                     android.util.Log.i(TAG, "Connection ESTABLISHED with $endpointId (statusCode=${result.status.statusCode})")
                     val existing = routingTable.getNode(endpointId)
                     val resolvedName = existing?.displayName ?: "Peer-${endpointId.take(4)}"
-                    routingTable.addPeer(endpointId, resolvedName, "wifi_direct")
-                    networkStateManager.updateMeshTransport(NetworkTransport.WifiDirect)
+                    val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
+                    val connectionType = if (!isBtOnly && HardwareStateUtil.isWifiEnabled(context)) "wifi_direct" else "bluetooth"
+                    routingTable.addPeer(endpointId, resolvedName, connectionType)
+                    if (connectionType == "wifi_direct") {
+                        networkStateManager.updateMeshTransport(NetworkTransport.WifiDirect)
+                    } else {
+                        networkStateManager.updateMeshTransport(NetworkTransport.Bluetooth)
+                    }
 
                     // Send our identity and routing advertisement immediately
                     scope.launch {

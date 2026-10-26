@@ -141,6 +141,9 @@ class MainActivity : ComponentActivity() {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // Audio Recording permission for voice messaging
+        permissions.add(Manifest.permission.RECORD_AUDIO)
+
         // OxygenOS / Android Location permissions for Nearby Connections discovery
         permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)

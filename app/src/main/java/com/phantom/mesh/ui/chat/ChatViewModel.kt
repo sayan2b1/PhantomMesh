@@ -65,6 +65,16 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun sendVoiceMessage(file: File, durationMs: Long) {
+        viewModelScope.launch {
+            try {
+                chatRepository.sendVoiceMessage(chatId, targetId, file, durationMs)
+            } catch (e: Exception) {
+                android.util.Log.e("ChatViewModel", "Error in sendVoiceMessage: ${e.message}", e)
+            }
+        }
+    }
+
     fun deleteMessageForEveryone(message: MessageEntity) {
         viewModelScope.launch {
             try {

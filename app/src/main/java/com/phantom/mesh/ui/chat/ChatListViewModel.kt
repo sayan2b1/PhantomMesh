@@ -33,6 +33,8 @@ class ChatListViewModel @Inject constructor(
 
     val currentUsername: StateFlow<String?> = sessionManager.usernameFlow
     val currentUserId: StateFlow<String?> = sessionManager.userIdFlow
+    val isBluetoothOnlyMode: StateFlow<Boolean> = sessionManager.bluetoothOnlyModeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     init {
         viewModelScope.launch {
