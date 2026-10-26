@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">PhantomMesh</string>
+    <string name="tagline">Zero-Trace Hybrid Mesh Communicator</string>
+    
+    <!-- Auth Strings -->
+    <string name="login_title">SECURE ACCESS</string>
+    <string name="username_hint">Username (Alphanumeric)</string>
+    <string name="password_hint">Passphrase</string>
+    <string name="decoy_password_hint">Decoy / Duress Passphrase</string>
+    <string name="sign_in">Authenticate</string>
+    <string name="register">Register Identity</string>
+    <string name="duress_warning">Entering decoy passphrase will immediately trigger emergency local database destruction.</string>
+    
+    <!-- Network Transports -->
+    <string name="transport_cloud">Firebase Cloud</string>
+    <string name="transport_wifi_direct">Wi-Fi Direct Mesh</string>
+    <string name="transport_bluetooth">Bluetooth LE Handshake</string>
+    <string name="transport_offline">Mesh Scanning (Offline)</string>
+    
+    <!-- Read Receipts -->
+    <string name="receipt_saved">Saved to Local DB</string>
+    <string name="receipt_mesh_sent">Handed off to Mesh Router</string>
+    <string name="receipt_delivered">Received by Target Peer (ACK)</string>
+</resources>

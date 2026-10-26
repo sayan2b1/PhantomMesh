@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1055583990532",
+    "project_id": "phantom-msg-mesh",
+    "storage_bucket": "phantom-msg-mesh.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1055583990532:android:0e4c390177faceb9be1651",
+        "android_client_info": {
+          "package_name": "com.phantom.mesh.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBu6sCUMcpdwxJtc6KIl9hWdq20MgIc1Cc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
