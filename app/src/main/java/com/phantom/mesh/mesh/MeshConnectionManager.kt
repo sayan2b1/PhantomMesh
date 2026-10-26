@@ -5,7 +5,6 @@ import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
-import com.google.android.gms.nearby.connection.ConnectionOptions
 import com.google.android.gms.nearby.connection.ConnectionResolution
 import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
 import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
@@ -29,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -126,6 +126,14 @@ class MeshConnectionManager @Inject constructor(
 
         if (livenessJob?.isActive != true) {
             livenessJob = scope.launch {
+                launch {
+                    sessionManager.bluetoothOnlyModeFlow.collectLatest {
+                        if (isAdvertising || isDiscovering) {
+                            android.util.Log.i(TAG, "Bluetooth-only mode changed: lowPower=$it, restarting mesh")
+                            restartMesh()
+                        }
+                    }
+                }
                 while (true) {
                     kotlinx.coroutines.delay(8000)
                     try {
@@ -248,10 +256,12 @@ class MeshConnectionManager @Inject constructor(
 
         try {
             val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
-            val options = AdvertisingOptions.Builder()
+            val builder = AdvertisingOptions.Builder()
                 .setStrategy(Strategy.P2P_CLUSTER)
-                .setDisruptiveUpgrade(!isBtOnly)
-                .build()
+            if (isBtOnly) {
+                builder.setLowPower(true)
+            }
+            val options = builder.build()
 
             connectionsClient.startAdvertising(
                 localDisplayName,
@@ -260,7 +270,7 @@ class MeshConnectionManager @Inject constructor(
                 options
             ).addOnSuccessListener {
                 isAdvertising = true
-                android.util.Log.i(TAG, "Advertising active as '$localDisplayName' ($SERVICE_ID)")
+                android.util.Log.i(TAG, "Advertising active as '$localDisplayName' ($SERVICE_ID, lowPower=$isBtOnly)")
             }.addOnFailureListener { e ->
                 val statusCode = (e as? com.google.android.gms.common.api.ApiException)?.statusCode
                 if (statusCode == ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) {
@@ -290,9 +300,13 @@ class MeshConnectionManager @Inject constructor(
         if (isDiscovering) return
 
         try {
-            val options = DiscoveryOptions.Builder()
+            val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
+            val builder = DiscoveryOptions.Builder()
                 .setStrategy(Strategy.P2P_CLUSTER)
-                .build()
+            if (isBtOnly) {
+                builder.setLowPower(true)
+            }
+            val options = builder.build()
 
             connectionsClient.startDiscovery(
                 SERVICE_ID,
@@ -300,7 +314,7 @@ class MeshConnectionManager @Inject constructor(
                 options
             ).addOnSuccessListener {
                 isDiscovering = true
-                android.util.Log.i(TAG, "Discovery active ($SERVICE_ID)")
+                android.util.Log.i(TAG, "Discovery active ($SERVICE_ID, lowPower=$isBtOnly)")
             }.addOnFailureListener { e ->
                 val statusCode = (e as? com.google.android.gms.common.api.ApiException)?.statusCode
                 if (statusCode == ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) {
@@ -342,19 +356,13 @@ class MeshConnectionManager @Inject constructor(
             val peerKey = if (info.endpointName.isNotBlank()) info.endpointName.lowercase().trim() else endpointId
             val shouldInitiate = if (myKey != peerKey) myKey < peerKey else localDisplayName < endpointId
 
-            val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
-            val connectionOptions = ConnectionOptions.Builder()
-                .setDisruptiveUpgrade(!isBtOnly)
-                .build()
-
             if (shouldInitiate) {
                 if (pendingConnections.add(endpointId)) {
                     android.util.Log.i(TAG, "Initiating connection to peer: $endpointId ($peerName) [myKey < peerKey]")
                     connectionsClient.requestConnection(
                         localDisplayName,
                         endpointId,
-                        connectionLifecycleCallback,
-                        connectionOptions
+                        connectionLifecycleCallback
                     ).addOnSuccessListener {
                         android.util.Log.i(TAG, "Requested connection to peer: $endpointId")
                     }.addOnFailureListener { e ->
@@ -372,8 +380,7 @@ class MeshConnectionManager @Inject constructor(
                         connectionsClient.requestConnection(
                             localDisplayName,
                             endpointId,
-                            connectionLifecycleCallback,
-                            connectionOptions
+                            connectionLifecycleCallback
                         ).addOnFailureListener { e ->
                             pendingConnections.remove(endpointId)
                             android.util.Log.w(TAG, "Fallback request failed: ${e.message}")
