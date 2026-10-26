@@ -1,0 +1,449 @@
+package com.phantom.mesh.ui.chat
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.LaunchedEffect
+import com.phantom.mesh.util.HardwareStateUtil
+import com.phantom.mesh.ui.theme.WarningAmber
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.phantom.mesh.data.local.entity.ChatEntity
+import com.phantom.mesh.ui.components.NetworkIndicator
+import com.phantom.mesh.ui.theme.DarkBackground
+import com.phantom.mesh.ui.theme.DarkCard
+import com.phantom.mesh.ui.theme.DarkSurface
+import com.phantom.mesh.ui.theme.DuressCrimson
+import com.phantom.mesh.ui.theme.NeonCyan
+import com.phantom.mesh.ui.theme.TextMuted
+import com.phantom.mesh.ui.theme.TextPrimary
+import com.phantom.mesh.ui.theme.TextSecondary
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatListScreen(
+    viewModel: ChatListViewModel,
+    onChatClick: (chatId: String, targetId: String) -> Unit,
+    onNavigateTopology: () -> Unit,
+    onNavigateDropZone: () -> Unit,
+    onNavigateSettings: () -> Unit
+) {
+    val transport by viewModel.activeTransport.collectAsState()
+    val chats by viewModel.chats.collectAsState()
+    val isDuress by viewModel.isDuressSession.collectAsState()
+    val currentUsername by viewModel.currentUsername.collectAsState()
+    val currentUserId by viewModel.currentUserId.collectAsState()
+
+    var showNewChatDialog by remember { mutableStateOf(false) }
+    var newChatPeerId by remember { mutableStateOf("") }
+
+    val context = LocalContext.current
+    var isBtEnabled by remember { mutableStateOf(HardwareStateUtil.isBluetoothEnabled(context)) }
+    var isLocEnabled by remember { mutableStateOf(HardwareStateUtil.isLocationEnabled(context)) }
+    var isWifiEnabled by remember { mutableStateOf(HardwareStateUtil.isWifiEnabled(context)) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            isBtEnabled = HardwareStateUtil.isBluetoothEnabled(context)
+            isLocEnabled = HardwareStateUtil.isLocationEnabled(context)
+            isWifiEnabled = HardwareStateUtil.isWifiEnabled(context)
+            kotlinx.coroutines.delay(2500)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "PHANTOM",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = NeonCyan,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        if (isDuress) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(DuressCrimson.copy(alpha = 0.2f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "DECOY STATE",
+                                    color = DuressCrimson,
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                },
+                actions = {
+                    // Dynamic Transport Indicator
+                    NetworkIndicator(transport = transport)
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // Topology Radar Button
+                    IconButton(onClick = onNavigateTopology) {
+                        Icon(Icons.Default.Hub, contentDescription = "Mesh Topology", tint = NeonCyan)
+                    }
+
+                    // Proximity Drop Zone Button
+                    IconButton(onClick = onNavigateDropZone) {
+                        Icon(Icons.Default.FileDownload, contentDescription = "Drop Zone", tint = NeonCyan)
+                    }
+
+                    // Settings Button
+                    IconButton(onClick = onNavigateSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextSecondary)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface)
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showNewChatDialog = true },
+                containerColor = NeonCyan,
+                contentColor = DarkBackground
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "New Anonymous Conversation")
+            }
+        },
+        containerColor = DarkBackground
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            // Hardware state warning banners for Wi-Fi, Bluetooth, and Location
+            if (!isWifiEnabled) {
+                MeshHardwareWarningBanner(
+                    icon = Icons.Default.Wifi,
+                    title = "Wi-Fi Hardware is Turned OFF",
+                    message = "Turn on your phone's Wi-Fi toggle (no internet/router needed). Offline mesh requires the Wi-Fi radio to link phones directly.",
+                    actionText = "TURN ON",
+                    onAction = { HardwareStateUtil.openWifiSettings(context) }
+                )
+            }
+            if (!isBtEnabled) {
+                MeshHardwareWarningBanner(
+                    icon = Icons.Default.Bluetooth,
+                    title = "Bluetooth is Turned OFF",
+                    message = "Nearby Mesh network requires Bluetooth to discover and connect with local peers.",
+                    actionText = "TURN ON",
+                    onAction = { HardwareStateUtil.openBluetoothSettings(context) }
+                )
+            }
+            if (!isLocEnabled) {
+                MeshHardwareWarningBanner(
+                    icon = Icons.Default.LocationOn,
+                    title = "Location (GPS) is Turned OFF",
+                    message = "Android requires Location turned ON to discover local BLE mesh devices.",
+                    actionText = "TURN ON",
+                    onAction = { HardwareStateUtil.openLocationSettings(context) }
+                )
+            }
+
+            if (chats.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = TextMuted,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = if (isDuress) "Decoy Session Active. Database clean." else "No active conversations",
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = "Connect with nearby mesh peers or start a cloud chat",
+                            color = TextMuted.copy(alpha = 0.6f),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f)
+                ) {
+                    items(chats, key = { it.chatId }) { chat ->
+                        ChatItem(
+                            chat = chat,
+                            onClick = { onChatClick(chat.chatId, chat.participants) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showNewChatDialog) {
+        AlertDialog(
+            onDismissRequest = { showNewChatDialog = false },
+            title = { Text("New Anonymous Chat", color = NeonCyan) },
+            text = {
+                Column {
+                    Text("Enter peer username or user ID to start conversation:", color = TextSecondary)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = newChatPeerId,
+                        onValueChange = { newChatPeerId = it },
+                        label = { Text("Peer Identity") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newChatPeerId.isNotBlank()) {
+                            val cleanPeer = newChatPeerId.trim().lowercase()
+                            val myIdentity = currentUsername ?: currentUserId ?: "user"
+                            val generatedId = com.phantom.mesh.data.repository.ChatRepository.generateChatId(myIdentity, cleanPeer)
+                            showNewChatDialog = false
+                            onChatClick(generatedId, cleanPeer)
+                        }
+                    }
+                ) {
+                    Text("OPEN CHANNEL", color = NeonCyan)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewChatDialog = false }) {
+                    Text("CANCEL", color = TextSecondary)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
+}
+
+@Composable
+fun ChatItem(
+    chat: ChatEntity,
+    onClick: () -> Unit
+) {
+    val timeFormatted = remember(chat.lastMessageTimestamp) {
+        if (chat.lastMessageTimestamp == 0L) ""
+        else SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(chat.lastMessageTimestamp))
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Avatar circle
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(DarkCard),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Person,
+                contentDescription = null,
+                tint = NeonCyan,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(14.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = chat.chatTitle ?: chat.participants,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = timeFormatted,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = chat.lastMessagePreview ?: "No messages yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+
+                // Transport indicator tag
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (chat.transportType == "mesh") NeonCyan.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.08f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = chat.transportType.uppercase(),
+                        fontSize = 8.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (chat.transportType == "mesh") NeonCyan else TextMuted
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MeshHardwareWarningBanner(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    message: String,
+    actionText: String,
+    onAction: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(DarkCard)
+            .border(1.dp, WarningAmber.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .padding(12.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(WarningAmber.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = WarningAmber,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = WarningAmber
+                )
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            TextButton(
+                onClick = onAction,
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    contentColor = NeonCyan
+                )
+            ) {
+                Text(
+                    text = actionText,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
