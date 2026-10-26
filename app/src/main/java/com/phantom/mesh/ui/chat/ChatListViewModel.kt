@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.phantom.mesh.mesh.MeshRoutingTable
 import javax.inject.Inject
 
 @HiltViewModel
@@ -20,10 +21,13 @@ class ChatListViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
-    private val meshConnectionManager: MeshConnectionManager
+    private val meshConnectionManager: MeshConnectionManager,
+    private val routingTable: MeshRoutingTable
 ) : ViewModel() {
 
     val activeTransport: StateFlow<NetworkTransport> = networkStateManager.activeTransport
+
+    val connectedPeers: StateFlow<List<MeshRoutingTable.MeshNode>> = routingTable.topology
 
     val chats: StateFlow<List<ChatEntity>> = chatRepository.observeActiveChats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

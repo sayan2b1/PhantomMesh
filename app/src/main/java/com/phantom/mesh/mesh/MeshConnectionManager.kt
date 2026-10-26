@@ -93,9 +93,13 @@ class MeshConnectionManager @Inject constructor(
 
     private val pendingConnections = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val incomingFilePayloads = java.util.concurrent.ConcurrentHashMap<Long, Payload>()
+    private val endpointDisplayNames = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var livenessJob: kotlinx.coroutines.Job? = null
 
     // ── Public API ─────────────────────────────────────────────
+
+    fun getLocalUserId(): String? = localUserId ?: sessionManager.getUserId()
+    fun getLocalDisplayName(): String = localDisplayName
 
     /**
      * Set the authenticated user's identity.
@@ -110,6 +114,11 @@ class MeshConnectionManager @Inject constructor(
             stopAdvertising()
             startAdvertising()
         }
+        if (changed && routingTable.hasPeers()) {
+            for (endpointId in routingTable.getAllConnectedEndpoints()) {
+                sendIdentityAnnouncement(endpointId)
+            }
+        }
     }
 
     /**
@@ -119,7 +128,10 @@ class MeshConnectionManager @Inject constructor(
     fun startMesh() {
         if (localUserId == null) {
             localUserId = sessionManager.getUserId() ?: "anon_${UUID.randomUUID().toString().take(6)}"
-            localDisplayName = sessionManager.getUsername() ?: "Anonymous"
+        }
+        val currentName = sessionManager.getUsername()
+        if (!currentName.isNullOrBlank() && (localDisplayName == "Anonymous" || localDisplayName.isBlank())) {
+            localDisplayName = currentName
         }
         startAdvertising()
         startDiscovering()
@@ -129,7 +141,7 @@ class MeshConnectionManager @Inject constructor(
                 launch {
                     sessionManager.bluetoothOnlyModeFlow.collectLatest {
                         if (isAdvertising || isDiscovering) {
-                            android.util.Log.i(TAG, "Bluetooth-only mode changed: lowPower=$it, restarting mesh")
+                            android.util.Log.i(TAG, "Bluetooth-only mode changed: $it, restarting mesh")
                             restartMesh()
                         }
                     }
@@ -255,22 +267,21 @@ class MeshConnectionManager @Inject constructor(
         if (isAdvertising) return
 
         try {
-            val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
-            val builder = AdvertisingOptions.Builder()
+            val options = AdvertisingOptions.Builder()
                 .setStrategy(Strategy.P2P_CLUSTER)
-            if (isBtOnly) {
-                builder.setLowPower(true)
-            }
-            val options = builder.build()
+                .setDisruptiveUpgrade(false)
+                .build()
+
+            val nameToAdvertise = localDisplayName.ifBlank { sessionManager.getUsername() ?: "Peer" }
 
             connectionsClient.startAdvertising(
-                localDisplayName,
+                nameToAdvertise,
                 SERVICE_ID,
                 connectionLifecycleCallback,
                 options
             ).addOnSuccessListener {
                 isAdvertising = true
-                android.util.Log.i(TAG, "Advertising active as '$localDisplayName' ($SERVICE_ID, lowPower=$isBtOnly)")
+                android.util.Log.i(TAG, "Advertising active as '$nameToAdvertise' ($SERVICE_ID)")
             }.addOnFailureListener { e ->
                 val statusCode = (e as? com.google.android.gms.common.api.ApiException)?.statusCode
                 if (statusCode == ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) {
@@ -300,13 +311,9 @@ class MeshConnectionManager @Inject constructor(
         if (isDiscovering) return
 
         try {
-            val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
-            val builder = DiscoveryOptions.Builder()
+            val options = DiscoveryOptions.Builder()
                 .setStrategy(Strategy.P2P_CLUSTER)
-            if (isBtOnly) {
-                builder.setLowPower(true)
-            }
-            val options = builder.build()
+                .build()
 
             connectionsClient.startDiscovery(
                 SERVICE_ID,
@@ -314,7 +321,7 @@ class MeshConnectionManager @Inject constructor(
                 options
             ).addOnSuccessListener {
                 isDiscovering = true
-                android.util.Log.i(TAG, "Discovery active ($SERVICE_ID, lowPower=$isBtOnly)")
+                android.util.Log.i(TAG, "Discovery active ($SERVICE_ID)")
             }.addOnFailureListener { e ->
                 val statusCode = (e as? com.google.android.gms.common.api.ApiException)?.statusCode
                 if (statusCode == ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) {
@@ -342,7 +349,8 @@ class MeshConnectionManager @Inject constructor(
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            val peerName = if (info.endpointName.isNotBlank()) info.endpointName else endpointId
+            val peerName = if (info.endpointName.isNotBlank()) info.endpointName else "Peer-${endpointId.take(4)}"
+            endpointDisplayNames[endpointId] = peerName
             android.util.Log.i(TAG, "Nearby peer discovered: $endpointId ($peerName)")
 
             if (routingTable.isConnected(endpointId)) {
@@ -350,42 +358,18 @@ class MeshConnectionManager @Inject constructor(
                 return
             }
 
-            // Symmetry breaking: The device with lexicographically smaller identifier initiates the connection
-            // This prevents mutual request collision in P2P_CLUSTER mode
-            val myKey = (localUserId ?: localDisplayName).lowercase().trim()
-            val peerKey = if (info.endpointName.isNotBlank()) info.endpointName.lowercase().trim() else endpointId
-            val shouldInitiate = if (myKey != peerKey) myKey < peerKey else localDisplayName < endpointId
-
-            if (shouldInitiate) {
-                if (pendingConnections.add(endpointId)) {
-                    android.util.Log.i(TAG, "Initiating connection to peer: $endpointId ($peerName) [myKey < peerKey]")
-                    connectionsClient.requestConnection(
-                        localDisplayName,
-                        endpointId,
-                        connectionLifecycleCallback
-                    ).addOnSuccessListener {
-                        android.util.Log.i(TAG, "Requested connection to peer: $endpointId")
-                    }.addOnFailureListener { e ->
-                        pendingConnections.remove(endpointId)
-                        android.util.Log.w(TAG, "Failed to request connection to $endpointId: ${e.message}")
-                    }
-                }
-            } else {
-                android.util.Log.i(TAG, "Discovered $endpointId ($peerName), waiting for peer to initiate [myKey >= peerKey]")
-                // Fallback timeout: If peer doesn't initiate within 1.5 seconds, initiate anyway to avoid deadlock
-                scope.launch {
-                    kotlinx.coroutines.delay(1500)
-                    if (!routingTable.isConnected(endpointId) && pendingConnections.add(endpointId)) {
-                        android.util.Log.i(TAG, "Fallback timeout: Requesting connection to peer $endpointId ($peerName)")
-                        connectionsClient.requestConnection(
-                            localDisplayName,
-                            endpointId,
-                            connectionLifecycleCallback
-                        ).addOnFailureListener { e ->
-                            pendingConnections.remove(endpointId)
-                            android.util.Log.w(TAG, "Fallback request failed: ${e.message}")
-                        }
-                    }
+            if (pendingConnections.add(endpointId)) {
+                val myName = localDisplayName.ifBlank { sessionManager.getUsername() ?: "Peer" }
+                android.util.Log.i(TAG, "Requesting connection to peer: $endpointId ($peerName)")
+                connectionsClient.requestConnection(
+                    myName,
+                    endpointId,
+                    connectionLifecycleCallback
+                ).addOnSuccessListener {
+                    android.util.Log.i(TAG, "Connection request sent to $endpointId")
+                }.addOnFailureListener { e ->
+                    pendingConnections.remove(endpointId)
+                    android.util.Log.w(TAG, "Failed requesting connection to $endpointId: ${e.message}")
                 }
             }
         }
@@ -393,7 +377,9 @@ class MeshConnectionManager @Inject constructor(
         override fun onEndpointLost(endpointId: String) {
             android.util.Log.i(TAG, "Nearby peer lost: $endpointId")
             pendingConnections.remove(endpointId)
-            routingTable.removePeer(endpointId)
+            if (!routingTable.isConnected(endpointId)) {
+                endpointDisplayNames.remove(endpointId)
+            }
         }
     }
 
@@ -403,30 +389,34 @@ class MeshConnectionManager @Inject constructor(
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             pendingConnections.remove(endpointId)
             val peerName = if (info.endpointName.isNotBlank()) info.endpointName else "Peer-${endpointId.take(4)}"
-            android.util.Log.i(TAG, "Incoming connection initiated from $endpointId ($peerName)")
-            routingTable.addPeer(endpointId, peerName, "bluetooth")
-            routingTable.associateUserId(endpointId, peerName.lowercase())
+            endpointDisplayNames[endpointId] = peerName
+            android.util.Log.i(TAG, "Connection initiated with $endpointId ($peerName) — auto-accepting")
 
-            // Auto-accept all connections for zero-config mesh networking
+            routingTable.addPeer(endpointId, peerName, "bluetooth")
+            routingTable.associateIdentity(endpointId, peerName.lowercase(), peerName)
+
+            // Auto-accept connection for zero-configuration mesh networking
             connectionsClient.acceptConnection(endpointId, payloadCallback)
                 .addOnSuccessListener {
-                    android.util.Log.i(TAG, "Accepted connection from $endpointId")
+                    android.util.Log.i(TAG, "Accepted connection handshake with $endpointId")
                 }
                 .addOnFailureListener { e ->
-                    android.util.Log.e(TAG, "Failed to accept connection from $endpointId: ${e.message}", e)
+                    android.util.Log.e(TAG, "Failed to accept connection with $endpointId: ${e.message}", e)
                 }
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             pendingConnections.remove(endpointId)
+
             when (result.status.statusCode) {
                 ConnectionsStatusCodes.STATUS_OK,
                 ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT -> {
                     android.util.Log.i(TAG, "Connection ESTABLISHED with $endpointId (statusCode=${result.status.statusCode})")
                     val existing = routingTable.getNode(endpointId)
-                    val resolvedName = existing?.displayName ?: "Peer-${endpointId.take(4)}"
+                    val resolvedName = endpointDisplayNames[endpointId] ?: existing?.displayName ?: "Peer-${endpointId.take(4)}"
                     val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
                     val connectionType = if (!isBtOnly && HardwareStateUtil.isWifiEnabled(context)) "wifi_direct" else "bluetooth"
+                    
                     routingTable.addPeer(endpointId, resolvedName, connectionType)
                     if (connectionType == "wifi_direct") {
                         networkStateManager.updateMeshTransport(NetworkTransport.WifiDirect)
@@ -434,7 +424,7 @@ class MeshConnectionManager @Inject constructor(
                         networkStateManager.updateMeshTransport(NetworkTransport.Bluetooth)
                     }
 
-                    // Send our identity and routing advertisement immediately
+                    // Exchange two-way identity announcements and routing knowledge
                     scope.launch {
                         sendIdentityAnnouncement(endpointId)
                         sendRoutingAdvertisement(endpointId)
@@ -445,10 +435,13 @@ class MeshConnectionManager @Inject constructor(
 
                 ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
                     android.util.Log.w(TAG, "Connection rejected by peer: $endpointId")
+                    endpointDisplayNames.remove(endpointId)
+                    routingTable.removePeer(endpointId)
                 }
 
                 ConnectionsStatusCodes.STATUS_ERROR -> {
                     android.util.Log.w(TAG, "Connection error with peer: $endpointId (${result.status.statusMessage})")
+                    endpointDisplayNames.remove(endpointId)
                     routingTable.removePeer(endpointId)
                 }
             }
@@ -456,9 +449,9 @@ class MeshConnectionManager @Inject constructor(
 
         override fun onDisconnected(endpointId: String) {
             pendingConnections.remove(endpointId)
+            endpointDisplayNames.remove(endpointId)
             routingTable.removePeer(endpointId)
 
-            // If no peers left, update transport to Offline
             if (!routingTable.hasPeers()) {
                 networkStateManager.updateMeshTransport(NetworkTransport.Offline)
             }
@@ -492,17 +485,14 @@ class MeshConnectionManager @Inject constructor(
                 PayloadTransferUpdate.Status.SUCCESS -> {
                     val payload = incomingFilePayloads.remove(update.payloadId)
                     if (payload != null && payload.type == Payload.Type.FILE) {
-                        val receivedFile = payload.asFile()?.asJavaFile()
-                        if (receivedFile != null && receivedFile.exists()) {
-                            scope.launch {
-                                try {
-                                    val json = receivedFile.readText(Charsets.UTF_8)
+                        scope.launch {
+                            try {
+                                val json = readPayloadContent(payload)
+                                if (!json.isNullOrBlank()) {
                                     handleIncomingPacket(json, endpointId)
-                                } catch (e: Exception) {
-                                    android.util.Log.e(TAG, "Failed reading incoming file payload: ${e.message}", e)
-                                } finally {
-                                    try { receivedFile.delete() } catch (ignored: Exception) {}
                                 }
+                            } catch (e: Exception) {
+                                android.util.Log.e(TAG, "Failed reading incoming file payload: ${e.message}", e)
                             }
                         }
                     }
@@ -514,6 +504,40 @@ class MeshConnectionManager @Inject constructor(
                 else -> {}
             }
         }
+    }
+
+    /**
+     * Reads the string content from an incoming Payload.File.
+     * Robust against both Java File representations and Android ParcelFileDescriptors.
+     */
+    private fun readPayloadContent(payload: Payload): String? {
+        val javaFile = payload.asFile()?.asJavaFile()
+        if (javaFile != null && javaFile.exists()) {
+            return try {
+                val content = javaFile.readText(Charsets.UTF_8)
+                javaFile.delete()
+                content
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Failed to read via javaFile: ${e.message}")
+                null
+            }
+        }
+
+        val pfd = payload.asFile()?.asParcelFileDescriptor()
+        if (pfd != null) {
+            return try {
+                java.io.FileInputStream(pfd.fileDescriptor).use { inputStream ->
+                    inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Failed to read via ParcelFileDescriptor: ${e.message}", e)
+                null
+            } finally {
+                try { pfd.close() } catch (ignored: Exception) {}
+            }
+        }
+
+        return null
     }
 
     // ── Core Routing Logic ─────────────────────────────────────
@@ -535,22 +559,49 @@ class MeshConnectionManager @Inject constructor(
 
         val myUsername = sessionManager.getUsername()
         val myUserId = sessionManager.getUserId() ?: localUserId
-        val isForMe = packet.targetId.equals(myUserId, ignoreCase = true) ||
-                      packet.targetId.equals(localUserId, ignoreCase = true) ||
-                      (myUsername != null && packet.targetId.equals(myUsername, ignoreCase = true)) ||
-                      packet.targetId.equals(localDisplayName, ignoreCase = true) ||
-                      packet.targetId.equals("broadcast", ignoreCase = true)
+        val cleanTarget = packet.targetId.trim().lowercase()
+        val isForMe = cleanTarget == myUserId?.trim()?.lowercase() ||
+                      cleanTarget == localUserId?.trim()?.lowercase() ||
+                      (myUsername != null && cleanTarget == myUsername.trim().lowercase()) ||
+                      cleanTarget == localDisplayName.trim().lowercase() ||
+                      cleanTarget == localDisplayName.substringBefore("#").trim().lowercase() ||
+                      cleanTarget == "broadcast" ||
+                      (routingTable.getAllConnectedEndpoints().size == 1 && fromEndpointId in routingTable.getAllConnectedEndpoints())
 
         when {
             packet.dataType == "identity" -> {
                 val parts = packet.data.split(":")
                 val peerUserId = parts.getOrNull(0) ?: packet.senderId
                 val peerUsername = parts.getOrNull(1) ?: peerUserId
-                routingTable.associateUserId(fromEndpointId, peerUserId)
-                routingTable.associateUserId(fromEndpointId, peerUsername.lowercase())
+                routingTable.associateIdentity(fromEndpointId, peerUserId, peerUsername)
+                endpointDisplayNames[fromEndpointId] = peerUsername
+                android.util.Log.i(TAG, "Mapped identity from $fromEndpointId: id=$peerUserId, name=$peerUsername")
+
+                // Send two-way identity confirmation back to peer
+                val myId = localUserId ?: sessionManager.getUserId()
+                val myName = sessionManager.getUsername() ?: localDisplayName
+                if (myId != null) {
+                    val replyPacket = MeshPacket(
+                        packetId = UUID.randomUUID().toString(),
+                        senderId = myId,
+                        targetId = fromEndpointId,
+                        data = "$myId:$myName",
+                        dataType = "identity_ack"
+                    )
+                    sendToEndpoint(fromEndpointId, replyPacket)
+                }
             }
 
-            // CASE 1: Packet is addressed to us
+            packet.dataType == "identity_ack" -> {
+                val parts = packet.data.split(":")
+                val peerUserId = parts.getOrNull(0) ?: packet.senderId
+                val peerUsername = parts.getOrNull(1) ?: peerUserId
+                routingTable.associateIdentity(fromEndpointId, peerUserId, peerUsername)
+                endpointDisplayNames[fromEndpointId] = peerUsername
+                android.util.Log.i(TAG, "Received identity ACK from $fromEndpointId: id=$peerUserId, name=$peerUsername")
+            }
+
+            // CASE 1: Packet is addressed to us or broadcast
             isForMe -> {
                 when (packet.dataType) {
                     "ack" -> {
@@ -568,16 +619,40 @@ class MeshConnectionManager @Inject constructor(
                     "delete_msg" -> {
                         // Remote message delete request received via mesh
                         _incomingPackets.emit(packet)
-                        val ack = packet.createAck()
-                        routeAndSend(ack)
+                        if (cleanTarget != "broadcast") {
+                            val ack = packet.createAck()
+                            routeAndSend(ack)
+                        }
+                        // Multi-hop delete relay: Forward to other connected peers in the mesh
+                        if (!packet.isExpired()) {
+                            val otherEndpoints = routingTable.getAllConnectedEndpoints().filter { it != fromEndpointId }
+                            if (otherEndpoints.isNotEmpty()) {
+                                val forwardPacket = packet.incrementHop()
+                                for (ep in otherEndpoints) {
+                                    sendToEndpoint(ep, forwardPacket)
+                                }
+                            }
+                        }
                     }
                     else -> {
                         // Regular message — emit for local processing
                         _incomingPackets.emit(packet)
 
-                        // Send ACK back to sender (bounces through mesh)
-                        val ack = packet.createAck()
-                        routeAndSend(ack)
+                        if (cleanTarget == "broadcast") {
+                            if (!packet.isExpired()) {
+                                val otherEndpoints = routingTable.getAllConnectedEndpoints().filter { it != fromEndpointId }
+                                if (otherEndpoints.isNotEmpty()) {
+                                    val forwardPacket = packet.incrementHop()
+                                    for (ep in otherEndpoints) {
+                                        sendToEndpoint(ep, forwardPacket)
+                                    }
+                                }
+                            }
+                        } else {
+                            // Send ACK back to sender (bounces through mesh)
+                            val ack = packet.createAck()
+                            routeAndSend(ack)
+                        }
                     }
                 }
             }
@@ -651,12 +726,13 @@ class MeshConnectionManager @Inject constructor(
      * populate their routing table with our identity.
      */
     private fun sendIdentityAnnouncement(endpointId: String) {
-        val userId = localUserId ?: return
+        val userId = localUserId ?: sessionManager.getUserId() ?: return
+        val username = sessionManager.getUsername() ?: localDisplayName
         val packet = MeshPacket(
             packetId = UUID.randomUUID().toString(),
             senderId = userId,
             targetId = endpointId, // Directed to this specific peer
-            data = "$userId:$localDisplayName",
+            data = "$userId:$username",
             dataType = "identity"
         )
         sendToEndpoint(endpointId, packet)
@@ -667,7 +743,7 @@ class MeshConnectionManager @Inject constructor(
      * Each peer learns which other peers are reachable through us.
      */
     private fun sendRoutingAdvertisement(endpointId: String) {
-        val userId = localUserId ?: return
+        val userId = localUserId ?: sessionManager.getUserId() ?: return
         val reachable = routingTable.generateRoutingAdvertisement()
         if (reachable.isEmpty()) return
 
@@ -698,7 +774,7 @@ class MeshConnectionManager @Inject constructor(
         meshQueueDao.enqueue(queueEntry)
 
         // Immediately try to drain if an active link exists
-        if (nextHop != null && routingTable.isConnected(nextHop)) {
+        if (routingTable.hasPeers()) {
             drainQueue()
         }
     }

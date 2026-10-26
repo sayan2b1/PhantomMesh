@@ -66,12 +66,12 @@ data class MeshPacket(
     /** Check if this packet has exceeded the max hop limit */
     fun isExpired(): Boolean = hopCount >= MAX_HOPS
 
-    /** Determine transfer priority: text = 0 (instant), media = 1+ */
+    /** Determine transfer priority: text/voice/ack/control = 0 (instant), media = 1+ */
     fun priority(): Int = when (dataType) {
-        "text", "ack", "routing", "drop_meta", "drop_pull" -> 0
+        "text", "ack", "routing", "identity", "identity_ack", "delete_msg", "drop_meta", "drop_pull", "voice" -> 0
         "image", "file" -> 1
         "video" -> 2
-        else -> 1
+        else -> 0
     }
 
     /** Create an ACK response packet that travels back to the original sender */

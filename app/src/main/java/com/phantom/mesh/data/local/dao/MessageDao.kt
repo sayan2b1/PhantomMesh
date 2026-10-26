@@ -77,6 +77,12 @@ interface MessageDao {
     @Query("UPDATE messages SET content = :deletedText, media_local_uri = null, media_cloud_url = null, data_type = 'deleted', mime_type = null WHERE message_id = :messageId")
     suspend fun markMessageAsDeleted(messageId: String, deletedText: String = "🚫 This message was deleted")
 
+    @Query("SELECT * FROM messages WHERE message_id = :messageId OR message_id LIKE '%' || :token || '%' LIMIT 1")
+    suspend fun getMessageByIdOrToken(messageId: String, token: String): MessageEntity?
+
+    @Query("UPDATE messages SET content = :deletedText, media_local_uri = null, media_cloud_url = null, data_type = 'deleted', mime_type = null WHERE message_id = :messageId OR message_id LIKE '%' || :token || '%'")
+    suspend fun markMessageAsDeletedByToken(messageId: String, token: String, deletedText: String = "🚫 This message was deleted")
+
     // ── DURESS: Nuclear data wipe ──────────────────────────────
     @Query("DELETE FROM messages")
     suspend fun nukeAllMessages()

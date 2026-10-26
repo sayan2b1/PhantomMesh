@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -68,7 +69,8 @@ import kotlin.math.sin
 @Composable
 fun TopologyScreen(
     viewModel: TopologyViewModel,
-    onBackClick: () -> Unit
+    onBackClick: () -> Unit,
+    onNodeClick: (MeshRoutingTable.MeshNode) -> Unit = {}
 ) {
     val nodes by viewModel.nodes.collectAsState()
     val peerCount by viewModel.peerCount.collectAsState()
@@ -225,7 +227,7 @@ fun TopologyScreen(
                         .padding(horizontal = 16.dp)
                 ) {
                     items(nodes, key = { it.endpointId }) { node ->
-                        MeshNodeCard(node = node)
+                        MeshNodeCard(node = node, onNodeClick = onNodeClick)
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
@@ -315,13 +317,17 @@ fun RadarCanvas(nodes: List<MeshRoutingTable.MeshNode>) {
 }
 
 @Composable
-fun MeshNodeCard(node: MeshRoutingTable.MeshNode) {
+fun MeshNodeCard(
+    node: MeshRoutingTable.MeshNode,
+    onNodeClick: (MeshRoutingTable.MeshNode) -> Unit = {}
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(DarkCard)
-            .border(1.dp, NeonCyan.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+            .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+            .clickable { onNodeClick(node) }
             .padding(12.dp)
     ) {
         Row(
@@ -329,10 +335,13 @@ fun MeshNodeCard(node: MeshRoutingTable.MeshNode) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
                         .background(if (node.connectionType == "wifi_direct") TransportWifiDirect.copy(alpha = 0.15f) else TransportBluetooth.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
@@ -341,7 +350,7 @@ fun MeshNodeCard(node: MeshRoutingTable.MeshNode) {
                         imageVector = if (node.connectionType == "wifi_direct") Icons.Default.Wifi else Icons.Default.Bluetooth,
                         contentDescription = null,
                         tint = if (node.connectionType == "wifi_direct") TransportWifiDirect else TransportBluetooth,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
@@ -350,7 +359,7 @@ fun MeshNodeCard(node: MeshRoutingTable.MeshNode) {
                 Column {
                     Text(
                         text = node.displayName,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary,
                         fontSize = 15.sp
                     )
@@ -363,29 +372,50 @@ fun MeshNodeCard(node: MeshRoutingTable.MeshNode) {
                 }
             }
 
-            Column(horizontalAlignment = Alignment.End) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (node.connectionType == "wifi_direct") TransportWifiDirect.copy(alpha = 0.2f) else TransportBluetooth.copy(alpha = 0.2f))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(horizontalAlignment = Alignment.End) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (node.connectionType == "wifi_direct") TransportWifiDirect.copy(alpha = 0.2f) else TransportBluetooth.copy(alpha = 0.2f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = if (node.connectionType == "wifi_direct") "WI-FI DIRECT" else "BLUETOOTH",
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (node.connectionType == "wifi_direct") TransportWifiDirect else TransportBluetooth
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     Text(
-                        text = if (node.connectionType == "wifi_direct") "WI-FI DIRECT" else "BLE",
-                        fontSize = 8.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = if (node.connectionType == "wifi_direct") TransportWifiDirect else TransportBluetooth
+                        text = "${node.reachablePeers.size} Hops Known",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                        fontSize = 10.sp
                     )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.width(10.dp))
 
-                Text(
-                    text = "${node.reachablePeers.size} Hops Known",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                    fontSize = 10.sp
-                )
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(NeonCyan)
+                        .clickable { onNodeClick(node) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "CHAT",
+                        color = DarkBackground,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
         }
     }

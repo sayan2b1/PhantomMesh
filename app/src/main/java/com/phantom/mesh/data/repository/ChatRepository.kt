@@ -7,14 +7,18 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.storage.FirebaseStorage
 import com.phantom.mesh.data.local.dao.ChatDao
+import com.phantom.mesh.data.local.dao.MeshQueueDao
 import com.phantom.mesh.data.local.dao.MessageDao
 import com.phantom.mesh.data.local.entity.ChatEntity
 import com.phantom.mesh.data.local.entity.MessageEntity
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshPacket
+import com.phantom.mesh.mesh.MeshRoutingTable
 import com.phantom.mesh.network.NetworkStateManager
+import com.phantom.mesh.util.HardwareStateUtil
 import android.content.Context
+import android.os.Environment
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +38,8 @@ class ChatRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val chatDao: ChatDao,
     private val messageDao: MessageDao,
+    private val meshQueueDao: MeshQueueDao,
+    private val routingTable: MeshRoutingTable,
     private val sessionManager: SessionManager,
     private val networkStateManager: NetworkStateManager,
     private val meshConnectionManager: MeshConnectionManager
@@ -51,14 +57,14 @@ class ChatRepository @Inject constructor(
     init {
         // Observe incoming mesh packets and persist them directly to Room
         scope.launch {
-            meshConnectionManager.incomingPackets.collectLatest { packet ->
+            meshConnectionManager.incomingPackets.collect { packet ->
                 handleIncomingMeshPacket(packet)
             }
         }
 
         // Listen for ACK packets bounced back from target peer
         scope.launch {
-            meshConnectionManager.incomingAcks.collectLatest { ackPacket ->
+            meshConnectionManager.incomingAcks.collect { ackPacket ->
                 ackPacket.refMessageId?.let { originalMessageId ->
                     // Two blue checks = delivered
                     messageDao.updateDeliveryStatus(originalMessageId, "delivered")
@@ -306,27 +312,92 @@ class ChatRepository @Inject constructor(
         return@withContext message
     }
 
-    private fun deleteLocalMediaFiles(messageId: String, localUri: String?) {
+    private suspend fun deleteLocalMediaFiles(messageId: String, localUri: String?) {
         try {
+            val cleanUuid = messageId.removePrefix("media_").removePrefix("msg_").removePrefix("voice_").removePrefix("video_").trim()
+            val shortId = if (messageId.length >= 8) messageId.take(8) else messageId
+            val shortUuid = if (cleanUuid.length >= 8) cleanUuid.take(8) else cleanUuid
+
+            val tokens = listOfNotNull(
+                messageId,
+                shortId,
+                cleanUuid.ifBlank { null },
+                shortUuid.ifBlank { null }
+            ).filter { it.length >= 4 }.distinct()
+
+            // 1. Delete explicit localUri if present
             if (!localUri.isNullOrBlank()) {
                 val f = File(localUri)
                 if (f.exists()) f.delete()
             }
+
+            // 2. Delete matching files in received_media
             val mediaDir = File(context.filesDir, "received_media")
-            File(mediaDir, "$messageId.jpg").delete()
-            File(mediaDir, "$messageId.png").delete()
-            File(mediaDir, "$messageId.mp4").delete()
-            File(mediaDir, "$messageId.m4a").delete()
+            if (mediaDir.exists() && mediaDir.isDirectory) {
+                mediaDir.listFiles()?.forEach { file ->
+                    if (tokens.any { token -> file.name.contains(token, ignoreCase = true) }) {
+                        file.delete()
+                    }
+                }
+            }
+
+            // 3. Delete matching files in voice_notes
             val voiceDir = File(context.filesDir, "voice_notes")
-            File(voiceDir, "$messageId.m4a").delete()
-        } catch (ignored: Exception) {}
+            if (voiceDir.exists() && voiceDir.isDirectory) {
+                voiceDir.listFiles()?.forEach { file ->
+                    if (tokens.any { token -> file.name.contains(token, ignoreCase = true) }) {
+                        file.delete()
+                    }
+                }
+            }
+
+            // 4. Delete matching files in root filesDir
+            context.filesDir.listFiles()?.forEach { file ->
+                if (file.isFile && tokens.any { token -> file.name.contains(token, ignoreCase = true) }) {
+                    file.delete()
+                }
+            }
+
+            // 5. Delete temporary cache files in cacheDir
+            context.cacheDir.listFiles()?.forEach { file ->
+                if (file.isFile && tokens.any { token -> file.name.contains(token, ignoreCase = true) }) {
+                    file.delete()
+                }
+            }
+
+            // 6. Delete temporary files in externalCacheDir
+            context.externalCacheDir?.listFiles()?.forEach { file ->
+                if (file.isFile && tokens.any { token -> file.name.contains(token, ignoreCase = true) }) {
+                    file.delete()
+                }
+            }
+
+            // 7. Purge from persistent Mesh priority queue
+            try {
+                meshQueueDao.deletePacket(messageId)
+                if (cleanUuid.isNotBlank()) {
+                    meshQueueDao.deletePacket(cleanUuid)
+                }
+            } catch (ignored: Exception) {}
+
+            // 8. Evict from Coil image cache so in-memory/disk cached bitmaps disappear
+            try {
+                coil.Coil.imageLoader(context).memoryCache?.clear()
+                coil.Coil.imageLoader(context).diskCache?.clear()
+            } catch (ignored: Exception) {}
+
+            // 9. Purge from public device gallery & media folders via MediaStore ContentResolver & filesystem sweep
+            HardwareStateUtil.deleteFromMediaStore(context, messageId)
+        } catch (e: Exception) {
+            android.util.Log.e("ChatRepository", "Error in deleteLocalMediaFiles: ${e.message}", e)
+        }
     }
 
     /**
      * Deletes a message for everyone (WhatsApp style).
      * 1. Replaces content with "🚫 This message was deleted" locally and deletes media file.
-     * 2. If online: updates Firestore message document and parent chat.
-     * 3. Over mesh: broadcasts a delete_msg MeshPacket so nearby peers update their local copy.
+     * 2. If online: updates Firestore message document and parent chat, deletes cloud storage file.
+     * 3. Over mesh: broadcasts a delete_msg MeshPacket to target AND broadcast so nearby peers update and purge their local copy.
      */
     suspend fun deleteMessageForEveryone(chatId: String, messageId: String, targetId: String) = withContext(Dispatchers.IO) {
         val deletedNotice = "🚫 This message was deleted"
@@ -334,6 +405,7 @@ class ChatRepository @Inject constructor(
         // 1. Mark as deleted locally in Room DB and purge local media
         val existing = messageDao.getMessageById(messageId)
         deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
+        HardwareStateUtil.deleteFromMediaStore(context, messageId)
         messageDao.markMessageAsDeleted(messageId, deletedNotice)
 
         // Update chat list preview
@@ -388,6 +460,13 @@ class ChatRepository @Inject constructor(
                 hopCount = 0
             )
             meshConnectionManager.sendPacket(packet)
+
+            // Also broadcast delete command to purge all relay / peer caches
+            val broadcastPacket = packet.copy(
+                packetId = "del_bc_${UUID.randomUUID().toString().take(8)}",
+                targetId = "broadcast"
+            )
+            meshConnectionManager.sendPacket(broadcastPacket)
         } catch (e: Exception) {
             android.util.Log.e("ChatRepository", "Failed to send delete_msg packet into mesh: ${e.message}", e)
         }
@@ -397,12 +476,10 @@ class ChatRepository @Inject constructor(
      * Deletes a message locally only ("Delete for Me").
      */
     suspend fun deleteMessageForMe(chatId: String, messageId: String) = withContext(Dispatchers.IO) {
+        val existing = messageDao.getMessageById(messageId)
+        deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
+        HardwareStateUtil.deleteFromMediaStore(context, messageId)
         messageDao.deleteMessageById(messageId)
-        try {
-            val mediaDir = File(context.filesDir, "received_media")
-            File(mediaDir, "$messageId.jpg").delete()
-            File(mediaDir, "$messageId.png").delete()
-        } catch (ignored: Exception) {}
     }
 
     private suspend fun routeViaCloud(message: MessageEntity) {
@@ -480,8 +557,21 @@ class ChatRepository @Inject constructor(
                     message.mediaCloudUrl
                 } else if (!message.mediaLocalUri.isNullOrBlank()) {
                     val file = File(message.mediaLocalUri)
-                    if (file.exists() && file.length() < 2 * 1024 * 1024) {
-                        val b64 = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                    if (file.exists()) {
+                        val bytes = if (file.length() > 750 * 1024) {
+                            try {
+                                val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                                val bos = java.io.ByteArrayOutputStream()
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, bos)
+                                bmp.recycle()
+                                bos.toByteArray()
+                            } catch (e: Exception) {
+                                file.readBytes()
+                            }
+                        } else {
+                            file.readBytes()
+                        }
+                        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                         "data:${message.mimeType ?: "image/jpeg"};base64,$b64"
                     } else {
                         message.content ?: ""
@@ -492,9 +582,21 @@ class ChatRepository @Inject constructor(
             } else if (message.dataType == "voice") {
                 if (!message.mediaLocalUri.isNullOrBlank()) {
                     val file = File(message.mediaLocalUri)
-                    if (file.exists() && file.length() < 2 * 1024 * 1024) {
+                    if (file.exists()) {
                         val b64 = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
                         "data:audio/mp4;base64,$b64"
+                    } else {
+                        message.content ?: ""
+                    }
+                } else {
+                    message.content ?: ""
+                }
+            } else if (message.dataType == "video") {
+                if (!message.mediaLocalUri.isNullOrBlank()) {
+                    val file = File(message.mediaLocalUri)
+                    if (file.exists()) {
+                        val b64 = android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+                        "data:${message.mimeType ?: "video/mp4"};base64,$b64"
                     } else {
                         message.content ?: ""
                     }
@@ -526,30 +628,48 @@ class ChatRepository @Inject constructor(
     // ── Incoming Packet Handlers ───────────────────────────────────────────
 
     private suspend fun handleIncomingMeshPacket(packet: MeshPacket) {
-        val currentUserId = sessionManager.getUserId() ?: return
-        val currentUsername = sessionManager.getUsername()
-        val isForMe = packet.targetId.equals(currentUserId, ignoreCase = true) ||
-                      (currentUsername != null && packet.targetId.equals(currentUsername, ignoreCase = true)) ||
-                      packet.targetId.equals("broadcast", ignoreCase = true)
-        if (!isForMe) return
-
-        // Handle remote delete command
+        // 1. Handle remote delete command IMMEDIATELY
         if (packet.dataType == "delete_msg") {
-            val deletedMessageId = packet.data
-            val existing = messageDao.getMessageById(deletedMessageId)
-            deleteLocalMediaFiles(deletedMessageId, existing?.mediaLocalUri)
-            messageDao.markMessageAsDeleted(deletedMessageId, "🚫 This message was deleted")
-            val targetChatId = existing?.chatId ?: generateChatId(packet.senderId, currentUsername ?: currentUserId)
-            chatDao.updateLastMessage(targetChatId, "🚫 This message was deleted", packet.timestamp, "mesh")
+            val deletedMessageId = packet.data.trim().ifBlank { packet.refMessageId?.trim() ?: "" }
+            if (deletedMessageId.isNotBlank()) {
+                val cleanUuid = deletedMessageId.removePrefix("media_").removePrefix("msg_").removePrefix("voice_").removePrefix("video_").trim()
+                val existing = messageDao.getMessageById(deletedMessageId) ?: messageDao.getMessageByIdOrToken(deletedMessageId, cleanUuid)
+
+                deleteLocalMediaFiles(deletedMessageId, existing?.mediaLocalUri)
+                HardwareStateUtil.deleteFromMediaStore(context, deletedMessageId)
+                if (cleanUuid.isNotBlank()) {
+                    HardwareStateUtil.deleteFromMediaStore(context, cleanUuid)
+                }
+
+                messageDao.markMessageAsDeleted(deletedMessageId, "🚫 This message was deleted")
+                if (cleanUuid.isNotBlank()) {
+                    messageDao.markMessageAsDeletedByToken(deletedMessageId, cleanUuid, "🚫 This message was deleted")
+                }
+
+                val targetChatId = existing?.chatId
+                if (targetChatId != null) {
+                    chatDao.updateLastMessage(targetChatId, "🚫 This message was deleted", packet.timestamp, "mesh")
+                }
+                android.util.Log.i("ChatRepository", "Purged deleted message $deletedMessageId via mesh")
+            }
             return
         }
 
+        val currentUserId = sessionManager.getUserId() ?: meshConnectionManager.getLocalUserId() ?: "anon_recipient"
+        val currentUsername = sessionManager.getUsername() ?: meshConnectionManager.getLocalDisplayName()
+
         val myIdentity = currentUsername ?: currentUserId
         val senderIdentity = packet.senderId
-        val chatId = generateChatId(senderIdentity, myIdentity)
+
+        // Resolve or create appropriate conversation ID
+        val potentialChatId = generateChatId(senderIdentity, myIdentity)
+        val fallbackChatId = generateChatId(senderIdentity, packet.targetId)
+        val existingChat = chatDao.getChatById(potentialChatId) ?: chatDao.getChatById(fallbackChatId)
+        val chatId = existingChat?.chatId ?: potentialChatId
 
         val isImage = packet.dataType == "image" || packet.data.startsWith("data:image")
         val isVoice = packet.dataType == "voice" || packet.data.startsWith("data:audio")
+        val isVideo = packet.dataType == "video" || packet.data.startsWith("data:video")
         var localSavedPath: String? = null
         var cloudSource: String? = null
 
@@ -579,9 +699,22 @@ class ChatRepository @Inject constructor(
             } catch (e: Exception) {
                 android.util.Log.e("ChatRepository", "Failed saving incoming mesh voice note: ${e.message}", e)
             }
+        } else if (isVideo && packet.data.startsWith("data:")) {
+            cloudSource = packet.data
+            try {
+                val b64 = packet.data.substringAfter("base64,")
+                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                val mediaDir = File(context.filesDir, "received_media").apply { mkdirs() }
+                val localFile = File(mediaDir, "${packet.packetId}.mp4")
+                localFile.writeBytes(bytes)
+                localSavedPath = localFile.absolutePath
+                android.util.Log.i("ChatRepository", "Saved incoming mesh video to: $localSavedPath (${bytes.size} bytes)")
+            } catch (e: Exception) {
+                android.util.Log.e("ChatRepository", "Failed saving incoming mesh video: ${e.message}", e)
+            }
         }
 
-        val displayPreview = if (isImage) "[Image Attachment]" else if (isVoice) "🎤 Voice message" else packet.data
+        val displayPreview = if (isImage) "[Image Attachment]" else if (isVoice) "🎤 Voice message" else if (isVideo) "[Video Attachment]" else packet.data
         ensureChatExists(chatId, senderIdentity, displayPreview, packet.timestamp, "mesh")
 
         val incomingMessage = MessageEntity(
@@ -589,12 +722,12 @@ class ChatRepository @Inject constructor(
             chatId = chatId,
             senderId = packet.senderId,
             targetId = currentUserId,
-            content = if (isImage) "attachment_${packet.packetId.take(8)}.jpg" else if (isVoice) "🎤 Voice message" else packet.data,
-            dataType = if (isImage) "image" else if (isVoice) "voice" else packet.dataType,
+            content = if (isImage) "attachment_${packet.packetId.take(8)}.jpg" else if (isVoice) "🎤 Voice message" else if (isVideo) "attachment_${packet.packetId.take(8)}.mp4" else packet.data,
+            dataType = if (isImage) "image" else if (isVoice) "voice" else if (isVideo) "video" else packet.dataType,
             mediaLocalUri = localSavedPath,
             mediaCloudUrl = cloudSource,
             mediaSizeBytes = packet.payloadSize,
-            mimeType = if (isImage) "image/jpeg" else if (isVoice) "audio/mp4" else null,
+            mimeType = if (isImage) "image/jpeg" else if (isVoice) "audio/mp4" else if (isVideo) "video/mp4" else null,
             deliveryStatus = "delivered", // Already delivered to this target device
             hopCount = packet.hopCount,
             transportUsed = "mesh",
@@ -670,6 +803,7 @@ class ChatRepository @Inject constructor(
                             if (isDeleted) {
                                 val existing = messageDao.getMessageById(messageId)
                                 deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
+                                HardwareStateUtil.deleteFromMediaStore(context, messageId)
                                 messageDao.markMessageAsDeleted(messageId, "🚫 This message was deleted")
                                 val currentChatId = doc.getString("chatId") ?: existing?.chatId
                                 if (currentChatId != null) {
@@ -819,6 +953,7 @@ class ChatRepository @Inject constructor(
                                 if (isDeleted) {
                                     val existing = messageDao.getMessageById(messageId)
                                     deleteLocalMediaFiles(messageId, existing?.mediaLocalUri)
+                                    HardwareStateUtil.deleteFromMediaStore(context, messageId)
                                     messageDao.markMessageAsDeleted(messageId, "🚫 This message was deleted")
                                     val currentChatId = doc.getString("chatId") ?: chat.chatId
                                     chatDao.updateLastMessage(currentChatId, "🚫 This message was deleted", System.currentTimeMillis(), "cloud")
