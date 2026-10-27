@@ -894,7 +894,7 @@ private fun SettingsMainContent(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "PhantomMesh v2.2.0",
+                text = "PhantomMesh v2.2.1",
                 color = NeonCyan,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
