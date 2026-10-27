@@ -560,18 +560,38 @@ class MeshConnectionManager @Inject constructor(
         val myUsername = sessionManager.getUsername()
         val myUserId = sessionManager.getUserId() ?: localUserId
         val cleanTarget = packet.targetId.trim().lowercase()
-        val targetTokens = cleanTarget.split(",").map { it.trim() }
-        val isTargetTokenMatch = (myUsername != null && targetTokens.contains(myUsername.trim().lowercase())) ||
-                                 (myUserId != null && targetTokens.contains(myUserId.trim().lowercase()))
+        val targetNameOnly = cleanTarget.substringBefore("#").trim()
+        val targetTokens = cleanTarget.split(",").map { it.trim() } + targetNameOnly
 
-        val isForMe = cleanTarget == myUserId?.trim()?.lowercase() ||
-                      cleanTarget == localUserId?.trim()?.lowercase() ||
-                      (myUsername != null && cleanTarget == myUsername.trim().lowercase()) ||
-                      cleanTarget == localDisplayName.trim().lowercase() ||
-                      cleanTarget == localDisplayName.substringBefore("#").trim().lowercase() ||
-                      cleanTarget == "broadcast" ||
+        val myCleanUser = myUsername?.trim()?.lowercase()
+        val myCleanUserId = myUserId?.trim()?.lowercase()
+        val localCleanUserId = localUserId?.trim()?.lowercase()
+        val localCleanDisplayName = localDisplayName.trim().lowercase()
+        val localDisplayNameOnly = localCleanDisplayName.substringBefore("#").trim()
+
+        val isTargetTokenMatch = (myCleanUser != null && targetTokens.contains(myCleanUser)) ||
+                                 (myCleanUserId != null && targetTokens.contains(myCleanUserId)) ||
+                                 (localDisplayNameOnly.isNotBlank() && targetTokens.contains(localDisplayNameOnly))
+
+        val isDirectCallPacket = packet.dataType.startsWith("call_") && (
+            fromEndpointId in routingTable.getAllConnectedEndpoints() ||
+            routingTable.getNode(fromEndpointId) != null
+        )
+
+        val isForMe = cleanTarget == "broadcast" ||
+                      cleanTarget == myCleanUserId ||
+                      cleanTarget == localCleanUserId ||
+                      (myCleanUser != null && cleanTarget == myCleanUser) ||
+                      cleanTarget == localCleanDisplayName ||
+                      cleanTarget == localDisplayNameOnly ||
+                      targetNameOnly == myCleanUserId ||
+                      targetNameOnly == localCleanUserId ||
+                      (myCleanUser != null && targetNameOnly == myCleanUser) ||
+                      targetNameOnly == localCleanDisplayName ||
+                      targetNameOnly == localDisplayNameOnly ||
                       isTargetTokenMatch ||
-                      (routingTable.getAllConnectedEndpoints().size == 1 && fromEndpointId in routingTable.getAllConnectedEndpoints())
+                      isDirectCallPacket ||
+                      (routingTable.getAllConnectedEndpoints().size <= 2 && fromEndpointId in routingTable.getAllConnectedEndpoints())
 
         when {
             packet.dataType == "identity" -> {
@@ -692,8 +712,8 @@ class MeshConnectionManager @Inject constructor(
                 for (endpointId in allEndpoints) {
                     sendToEndpoint(endpointId, packet)
                 }
-            } else {
-                // No peers connected right now: Enqueue so packet will be sent when connection links up!
+            } else if (!packet.dataType.startsWith("call_")) {
+                // No peers connected right now: Enqueue non-call packet so it will be sent when connection links up!
                 scope.launch {
                     enqueueMediaPacket(packet)
                 }

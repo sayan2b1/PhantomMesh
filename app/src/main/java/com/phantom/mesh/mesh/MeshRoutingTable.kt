@@ -123,9 +123,12 @@ class MeshRoutingTable @Inject constructor() {
         )
         directConnections[endpointId] = node
         userToEndpoint[cleanUser] = endpointId
+        userToEndpoint[cleanUser.substringBefore("#").trim()] = endpointId
         userToEndpoint[userId] = endpointId
         if (!displayName.isNullOrBlank()) {
-            userToEndpoint[displayName.trim().lowercase()] = endpointId
+            val dName = displayName.trim().lowercase()
+            userToEndpoint[dName] = endpointId
+            userToEndpoint[dName.substringBefore("#").trim()] = endpointId
             userToEndpoint[displayName.trim()] = endpointId
         }
         emitTopologyUpdate()
@@ -140,8 +143,15 @@ class MeshRoutingTable @Inject constructor() {
      */
     fun removePeer(endpointId: String) {
         val node = directConnections.remove(endpointId)
-        node?.userId?.let { userToEndpoint.remove(it) }
-        node?.displayName?.let { userToEndpoint.remove(it.trim().lowercase()) }
+        node?.userId?.let { 
+            userToEndpoint.remove(it)
+            userToEndpoint.remove(it.substringBefore("#").trim())
+        }
+        node?.displayName?.let { 
+            val d = it.trim().lowercase()
+            userToEndpoint.remove(d)
+            userToEndpoint.remove(d.substringBefore("#").trim())
+        }
 
         // Also remove this peer from other nodes' reachablePeers sets
         directConnections.values.forEach { peer ->
@@ -179,27 +189,40 @@ class MeshRoutingTable @Inject constructor() {
      */
     fun resolveNextHop(targetUserId: String): String? {
         val cleanTarget = targetUserId.trim().lowercase()
+        val targetNameOnly = cleanTarget.substringBefore("#").trim()
+
         // 0. Direct endpointId match
         if (directConnections.containsKey(targetUserId)) return targetUserId
         if (directConnections.containsKey(cleanTarget)) return cleanTarget
+        if (directConnections.containsKey(targetNameOnly)) return targetNameOnly
 
         // 1. Direct connection by userId / username / displayName mapping
         userToEndpoint[cleanTarget]?.let { return it }
+        userToEndpoint[targetNameOnly]?.let { return it }
         userToEndpoint[targetUserId]?.let { return it }
 
-        // 2. Direct connection matching node displayName or userId
+        // 2. Direct connection matching node displayName or userId (with and without #hash)
         for ((endpointId, node) in directConnections) {
-            if (node.displayName.equals(cleanTarget, ignoreCase = true) ||
-                node.displayName.equals(targetUserId, ignoreCase = true) ||
-                node.userId?.equals(cleanTarget, ignoreCase = true) == true ||
-                node.userId?.equals(targetUserId, ignoreCase = true) == true) {
+            val nodeCleanName = node.displayName.trim().lowercase()
+            val nodeNameOnly = nodeCleanName.substringBefore("#").trim()
+            val nodeUserId = node.userId?.trim()?.lowercase()
+            val nodeUserIdOnly = nodeUserId?.substringBefore("#")?.trim()
+
+            if (nodeCleanName == cleanTarget ||
+                nodeCleanName == targetNameOnly ||
+                nodeNameOnly == cleanTarget ||
+                nodeNameOnly == targetNameOnly ||
+                nodeUserId == cleanTarget ||
+                nodeUserId == targetNameOnly ||
+                nodeUserIdOnly == cleanTarget ||
+                nodeUserIdOnly == targetNameOnly) {
                 return endpointId
             }
         }
 
         // 3. Indirect route — find a peer that can reach the target
         for ((endpointId, node) in directConnections) {
-            if (cleanTarget in node.reachablePeers || targetUserId in node.reachablePeers) {
+            if (cleanTarget in node.reachablePeers || targetUserId in node.reachablePeers || targetNameOnly in node.reachablePeers) {
                 return endpointId
             }
         }

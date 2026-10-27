@@ -196,12 +196,18 @@ class ChatRepository @Inject constructor(
 
         // Step 3: Route through active network layer (Dual-Network Router)
         try {
-            if (isOnline) {
-                routeViaCloud(message)
-            }
-            // Transmit via mesh if offline or if local peers are connected
+            // Transmit via mesh FIRST (0ms local Bluetooth/Wi-Fi Direct dispatch)
             if (!isOnline || meshConnectionManager.hasActivePeers()) {
                 routeViaMesh(message)
+            }
+            if (isOnline) {
+                scope.launch {
+                    try {
+                        routeViaCloud(message)
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatRepository", "Async cloud routing error: ${e.message}")
+                    }
+                }
             }
         } catch (e: Exception) {
             android.util.Log.e("ChatRepository", "Failed to route message: ${e.message}", e)
@@ -567,14 +573,15 @@ class ChatRepository @Inject constructor(
             }
 
             val currentUsername = sessionManager.getUsername() ?: message.senderId
-            val targetUsername = message.targetId.trim().lowercase()
+            val targetClean = message.targetId.trim().lowercase()
+            val targetUsernameOnly = targetClean.substringBefore("#").trim()
             val docData = hashMapOf(
                 "messageId" to message.messageId,
                 "chatId" to message.chatId,
                 "senderId" to message.senderId,
                 "senderUsername" to currentUsername,
-                "targetId" to targetUsername,
-                "targetUsername" to targetUsername,
+                "targetId" to targetClean,
+                "targetUsername" to targetUsernameOnly,
                 "content" to message.content,
                 "dataType" to message.dataType,
                 "mediaCloudUrl" to message.mediaCloudUrl,
@@ -586,7 +593,7 @@ class ChatRepository @Inject constructor(
                 "replyToSender" to message.replyToSender
             )
 
-            android.util.Log.d("ChatRepository", "Writing message to Firestore: chatId=${message.chatId}, targetId=$targetUsername, messageId=${message.messageId}")
+            android.util.Log.d("ChatRepository", "Writing message to Firestore: chatId=${message.chatId}, targetId=$targetClean ($targetUsernameOnly), messageId=${message.messageId}")
 
             firestore.collection("chats")
                 .document(message.chatId)
@@ -596,9 +603,10 @@ class ChatRepository @Inject constructor(
                 .await()
 
             // Also update parent chat metadata so recipient can discover the conversation
+            val participantsList = listOf(currentUsername.trim().lowercase(), targetClean, targetUsernameOnly).distinct()
             val parentChatData = hashMapOf(
                 "chatId" to message.chatId,
-                "participants" to listOf(currentUsername.trim().lowercase(), targetUsername),
+                "participants" to participantsList,
                 "lastMessage" to (if (message.dataType == "image") "[Image Attachment]" else message.content),
                 "lastSender" to currentUsername,
                 "updatedAt" to message.timestamp

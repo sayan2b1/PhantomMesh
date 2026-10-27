@@ -4,11 +4,13 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -57,7 +59,19 @@ class AudioVoipEngine(
 
     fun setSpeakerOn(speakerOn: Boolean) {
         try {
-            audioManager?.isSpeakerphoneOn = speakerOn
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val speakerDevice = audioManager?.availableCommunicationDevices?.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+                if (speakerOn && speakerDevice != null) {
+                    audioManager?.setCommunicationDevice(speakerDevice)
+                } else {
+                    audioManager?.clearCommunicationDevice()
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.isSpeakerphoneOn = speakerOn
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to toggle speakerphone: ${e.message}")
         }
@@ -109,19 +123,40 @@ class AudioVoipEngine(
             val inMinBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, AUDIO_FORMAT)
             val inBufferSize = maxOf(inMinBufferSize, CHUNK_SIZE * 2)
 
-            audioRecord = AudioRecord(
+            // Multi-source fallback (VOICE_COMMUNICATION -> MIC -> DEFAULT) for max hardware compatibility
+            var record: AudioRecord? = null
+            val audioSources = intArrayOf(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                SAMPLE_RATE,
-                CHANNEL_IN,
-                AUDIO_FORMAT,
-                inBufferSize
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.DEFAULT
             )
+            for (source in audioSources) {
+                try {
+                    val candidate = AudioRecord(
+                        source,
+                        SAMPLE_RATE,
+                        CHANNEL_IN,
+                        AUDIO_FORMAT,
+                        inBufferSize
+                    )
+                    if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                        record = candidate
+                        Log.i(TAG, "AudioRecord initialized using audio source: $source")
+                        break
+                    } else {
+                        candidate.release()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "AudioSource $source failed: ${e.message}")
+                }
+            }
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord failed to initialize")
+            if (record == null) {
+                Log.e(TAG, "AudioRecord failed to initialize across all audio sources")
                 return
             }
 
+            audioRecord = record
             audioRecord?.startRecording()
             Log.i(TAG, "AudioRecord started capture at $SAMPLE_RATE Hz")
 
@@ -142,6 +177,8 @@ class AudioVoipEngine(
                         } else {
                             chunkStream.reset()
                         }
+                    } else {
+                        kotlinx.coroutines.delay(10)
                     }
                 }
             }
@@ -154,11 +191,13 @@ class AudioVoipEngine(
      * Feeds incoming PCM audio from remote peer into the AudioTrack.
      */
     fun playRemoteAudio(pcmData: ByteArray) {
-        if (!isRunning.get()) return
-        try {
-            audioTrack?.write(pcmData, 0, pcmData.size)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to write PCM buffer to AudioTrack: ${e.message}")
+        if (!isRunning.get() || pcmData.isEmpty()) return
+        audioScope.launch {
+            try {
+                audioTrack?.write(pcmData, 0, pcmData.size)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to write PCM buffer to AudioTrack: ${e.message}")
+            }
         }
     }
 

@@ -235,15 +235,8 @@ class CallManager @Inject constructor(
         callType: CallType
     ): CallInitiationResult {
         val currentTransport = networkStateManager.activeTransport.value
-
-        if (callType == CallType.VIDEO && currentTransport is NetworkTransport.Bluetooth) {
-            val msg = "Video calling is unavailable over Bluetooth Mesh due to bandwidth limits. Voice calling is available across all networks (Bluetooth, Wi-Fi, Cloud)."
-            Log.w(TAG, msg)
-            return CallInitiationResult.BlockedByTransport(msg)
-        }
-
-        if (currentTransport is NetworkTransport.Offline) {
-            val msg = "Device is offline. Connect to internet, Bluetooth mesh, or Wi-Fi Direct peer to start a call."
+        if (currentTransport is NetworkTransport.Offline && !meshConnectionManagerProvider.get().hasActivePeers() && !networkStateManager.isInternetAvailable.value) {
+            val msg = "Device is offline. Connect to internet or Bluetooth mesh peer to start a call."
             Log.w(TAG, msg)
             return CallInitiationResult.BlockedByTransport(msg)
         }
@@ -262,13 +255,14 @@ class CallManager @Inject constructor(
             clean != myCleanName && clean != myCleanId && !clean.startsWith("peer ") && clean != "peer"
         } ?: addressTokens.firstOrNull() ?: peerAddress
 
-        val cleanTargetAddress = resolvedPeerToken
+        val cleanTargetRaw = resolvedPeerToken
             .removePrefix("Peer ")
             .removePrefix("Peer-")
             .removePrefix("PEER: ")
             .removePrefix("@")
             .trim()
             .lowercase()
+        val cleanTargetAddress = cleanTargetRaw.substringBefore("#").trim()
 
         val cleanDisplayName = (nameTokens.firstOrNull { !it.equals(myUsername, ignoreCase = true) } ?: resolvedPeerToken)
             .removePrefix("Peer ")
@@ -295,7 +289,7 @@ class CallManager @Inject constructor(
 
         audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
         if (callType == CallType.VIDEO) {
-            audioManager?.isSpeakerphoneOn = true
+            audioVoipEngine?.setSpeakerOn(true)
         }
 
         // 1. Signal call offer over Cloud Firestore
@@ -306,6 +300,7 @@ class CallManager @Inject constructor(
                 "callerUsername" to myUsername,
                 "targetId" to cleanTargetAddress,
                 "targetUsername" to cleanTargetAddress,
+                "targetRaw" to cleanTargetRaw,
                 "callType" to callType.name,
                 "status" to "ringing",
                 "timestamp" to System.currentTimeMillis()
@@ -331,6 +326,14 @@ class CallManager @Inject constructor(
                 dataType = "call_offer"
             )
             meshConnectionManagerProvider.get().sendPacket(meshPacket)
+
+            if (cleanTargetRaw != cleanTargetAddress) {
+                val altPacket = meshPacket.copy(
+                    packetId = UUID.randomUUID().toString(),
+                    targetId = cleanTargetRaw
+                )
+                meshConnectionManagerProvider.get().sendPacket(altPacket)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Mesh signaling offer failed: ${e.message}")
         }
@@ -615,14 +618,18 @@ class CallManager @Inject constructor(
                     connectCall()
                 }
             }
-            "call_reject" -> {
-                if (_currentCall.value?.callId == packet.data) {
-                    onCallEndedRemote("Call Declined")
-                }
-            }
-            "call_end" -> {
-                if (_currentCall.value?.callId == packet.data) {
-                    onCallEndedRemote("Call Ended")
+            "call_reject", "call_end" -> {
+                val current = _currentCall.value
+                if (current != null && current.status != CallStatus.ENDED) {
+                    val pData = packet.data.trim()
+                    val pSender = packet.senderId.trim().lowercase().substringBefore("#")
+                    val callPeer = current.peerAddress.trim().lowercase().substringBefore("#")
+                    val callUser = current.peerUsername.trim().lowercase().substringBefore("#")
+
+                    if (pData == current.callId || pData.isBlank() || pData == "broadcast" ||
+                        pSender == callPeer || pSender == callUser || pData == callPeer || pData == callUser) {
+                        onCallEndedRemote(if (packet.dataType == "call_reject") "Call Declined" else "Call Ended")
+                    }
                 }
             }
             "call_audio" -> {
@@ -738,14 +745,22 @@ class CallManager @Inject constructor(
             } catch (_: Exception) {}
 
             try {
+                val endType = if (call.status == CallStatus.INCOMING_RINGING) "call_reject" else "call_end"
                 val endPacket = MeshPacket(
                     packetId = UUID.randomUUID().toString(),
                     senderId = sessionManager.getUserId() ?: "local",
                     targetId = call.peerAddress,
                     data = call.callId,
-                    dataType = if (call.status == CallStatus.INCOMING_RINGING) "call_reject" else "call_end"
+                    dataType = endType
                 )
                 meshConnectionManagerProvider.get().sendPacket(endPacket)
+
+                // Flood broadcast to ensure remote peer terminates immediately
+                val broadcastPacket = endPacket.copy(
+                    packetId = UUID.randomUUID().toString(),
+                    targetId = "broadcast"
+                )
+                meshConnectionManagerProvider.get().sendPacket(broadcastPacket)
             } catch (_: Exception) {}
         }
 
