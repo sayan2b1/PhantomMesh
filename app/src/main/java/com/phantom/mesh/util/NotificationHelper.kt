@@ -22,7 +22,8 @@ import javax.inject.Singleton
 @Singleton
 class NotificationHelper @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager
 ) {
     companion object {
         const val CHANNEL_ID = "phantom_messages_channel"
@@ -100,6 +101,8 @@ class NotificationHelper @Inject constructor(
             .trim()
             .ifBlank { "Encrypted Contact" }
 
+        val displaySenderName = contactAliasManager.getFormattedDisplayName(cleanSender)
+
         val displayText = when {
             dataType == "image" || content.startsWith("data:image") -> "📷 Photo attachment"
             dataType == "video" || content.startsWith("data:video") -> "🎥 Video attachment"
@@ -135,7 +138,7 @@ class NotificationHelper @Inject constructor(
                     setLargeIcon(largeIconBitmap)
                 }
             }
-            .setContentTitle(cleanSender)
+            .setContentTitle(displaySenderName)
             .setContentText(displayText)
             .setStyle(NotificationCompat.BigTextStyle().bigText(displayText))
             .setPriority(NotificationCompat.PRIORITY_HIGH)

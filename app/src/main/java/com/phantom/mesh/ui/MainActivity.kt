@@ -177,10 +177,16 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+        } else {
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
 
         // Audio Recording permission for voice messaging
         permissions.add(Manifest.permission.RECORD_AUDIO)
+
+        // Read Contacts permission for contact card sharing
+        permissions.add(Manifest.permission.READ_CONTACTS)
 
         // OxygenOS / Android Location permissions for Nearby Connections discovery
         permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)

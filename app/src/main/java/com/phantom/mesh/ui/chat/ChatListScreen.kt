@@ -1,7 +1,10 @@
 package com.phantom.mesh.ui.chat
 
+import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +30,9 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.draw.rotate
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.LocationOn
@@ -46,6 +51,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -70,6 +76,7 @@ import com.phantom.mesh.ui.components.NetworkIndicator
 import com.phantom.mesh.ui.theme.DarkBackground
 import com.phantom.mesh.ui.theme.DarkCard
 import com.phantom.mesh.ui.theme.DarkSurface
+import com.phantom.mesh.ui.theme.DarkSurfaceVariant
 import com.phantom.mesh.ui.theme.DuressCrimson
 import com.phantom.mesh.ui.theme.NeonCyan
 import com.phantom.mesh.ui.theme.TextMuted
@@ -95,6 +102,7 @@ fun ChatListScreen(
     val currentUserId by viewModel.currentUserId.collectAsState()
     val isBtOnly by viewModel.isBluetoothOnlyMode.collectAsState()
     val connectedPeers by viewModel.connectedPeers.collectAsState()
+    val contactAliases by viewModel.contactAliases.collectAsState()
 
     val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
     val radarRotation by infiniteTransition.animateFloat(
@@ -109,6 +117,8 @@ fun ChatListScreen(
 
     var showNewChatDialog by remember { mutableStateOf(false) }
     var newChatPeerId by remember { mutableStateOf("") }
+    var chatForAliasEdit by remember { mutableStateOf<ChatEntity?>(null) }
+    var aliasInput by remember { mutableStateOf("") }
 
     val context = LocalContext.current
     var isBtEnabled by remember { mutableStateOf(HardwareStateUtil.isBluetoothEnabled(context)) }
@@ -298,6 +308,7 @@ fun ChatListScreen(
                         items(connectedPeers, key = { it.endpointId }) { peer ->
                             val rawTarget = peer.displayName.ifBlank { peer.userId ?: peer.endpointId }
                             val peerTarget = rawTarget.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
+                            val formattedPeerName = viewModel.getFormattedDisplayName(peerTarget)
                             val myIdentity = currentUsername ?: currentUserId ?: "user"
                             val chatId = com.phantom.mesh.data.repository.ChatRepository.generateChatId(myIdentity, peerTarget)
 
@@ -320,7 +331,7 @@ fun ChatListScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = peerTarget,
+                                    text = formattedPeerName,
                                     color = TextPrimary,
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace
@@ -372,10 +383,18 @@ fun ChatListScreen(
                         .weight(1f)
                 ) {
                     items(chats, key = { it.chatId }) { chat ->
+                        val rawTitle = chat.chatTitle ?: chat.participants
+                        val formattedTitle = viewModel.getFormattedDisplayName(rawTitle)
                         ChatItem(
                             chat = chat,
+                            displayName = formattedTitle,
                             modifier = Modifier.animateItem(),
-                            onClick = { onChatClick(chat.chatId, chat.participants) }
+                            onClick = { onChatClick(chat.chatId, chat.participants) },
+                            onLongClick = {
+                                val cleanTarget = rawTitle.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
+                                aliasInput = viewModel.getAlias(cleanTarget) ?: ""
+                                chatForAliasEdit = chat
+                            }
                         )
                     }
                 }
@@ -457,13 +476,136 @@ fun ChatListScreen(
             containerColor = DarkCard
         )
     }
+
+    // Custom Contact Naming Dialog from Chat List
+    if (chatForAliasEdit != null) {
+        val targetChat = chatForAliasEdit!!
+        val rawUser = (targetChat.chatTitle ?: targetChat.participants)
+            .removePrefix("Peer ")
+            .removePrefix("Peer-")
+            .removePrefix("PEER: ")
+            .trim()
+            .ifBlank { "User" }
+        val currentAlias = viewModel.getAlias(rawUser)
+
+        AlertDialog(
+            onDismissRequest = { chatForAliasEdit = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Badge,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Custom Contact Name", color = TextPrimary)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Set a customized name for @$rawUser. Format: Sayan Dolai ($rawUser).",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    OutlinedTextField(
+                        value = aliasInput,
+                        onValueChange = { aliasInput = it },
+                        label = { Text("Custom Name") },
+                        placeholder = { Text("e.g. Sayan Dolai") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val previewText = remember(aliasInput, rawUser) {
+                        val trimmed = aliasInput.trim()
+                        if (trimmed.isNotBlank() && !trimmed.equals(rawUser, ignoreCase = true)) {
+                            "$trimmed ($rawUser)"
+                        } else {
+                            rawUser
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(DarkSurfaceVariant.copy(alpha = 0.6f))
+                            .padding(10.dp)
+                    ) {
+                        Column {
+                            Text("LIVE DISPLAY PREVIEW", fontSize = 10.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = previewText,
+                                fontSize = 14.sp,
+                                color = NeonCyan,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!currentAlias.isNullOrBlank()) {
+                        TextButton(
+                            onClick = {
+                                viewModel.clearAlias(rawUser)
+                                chatForAliasEdit = null
+                                Toast.makeText(context, "Custom name removed", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Text("RESET", color = DuressCrimson, fontSize = 12.sp)
+                        }
+                    }
+
+                    TextButton(
+                        onClick = {
+                            val trimmed = aliasInput.trim()
+                            if (trimmed.isNotBlank()) {
+                                viewModel.setAlias(rawUser, trimmed)
+                                Toast.makeText(context, "Contact name updated", Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.clearAlias(rawUser)
+                            }
+                            chatForAliasEdit = null
+                        }
+                    ) {
+                        Text("SAVE", color = NeonCyan, fontSize = 12.sp)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { chatForAliasEdit = null }) {
+                    Text("CANCEL", color = TextMuted, fontSize = 12.sp)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatItem(
     chat: ChatEntity,
+    displayName: String,
     modifier: Modifier = Modifier,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     val timeFormatted = remember(chat.lastMessageTimestamp) {
         if (chat.lastMessageTimestamp == 0L) ""
@@ -473,7 +615,10 @@ fun ChatItem(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -501,17 +646,8 @@ fun ChatItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val rawTitle = chat.chatTitle ?: chat.participants
-                val cleanTitle = remember(rawTitle) {
-                    rawTitle
-                        .removePrefix("Peer ")
-                        .removePrefix("Peer-")
-                        .removePrefix("PEER: ")
-                        .trim()
-                        .ifBlank { "Encrypted Contact" }
-                }
                 Text(
-                    text = cleanTitle,
+                    text = displayName,
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     maxLines = 1,
