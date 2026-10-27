@@ -5,42 +5,27 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Continuously monitors internet connectivity and drives the seamless
- * handoff between cloud (Firebase) and mesh (Nearby Connections) modes.
- *
- * ## Handoff Logic
- *
- * ```
- * Internet AVAILABLE  → NetworkTransport.Cloud
- *                        • Messages route through Firestore
- *                        • Nearby Connections advertising STOPS
- *
- * Internet LOST       → NetworkTransport.Offline (briefly)
- *                        • Nearby Connections advertising + discovery START automatically
- *                        • Once a peer is found:
- *                          → Wi-Fi Direct bandwidth confirmed → NetworkTransport.WifiDirect
- *                          → BLE-only connection              → NetworkTransport.Bluetooth
- * ```
- *
- * The [MeshConnectionManager] observes [isInternetAvailable] to trigger
- * the automatic Nearby Connections start/stop cycle.
+ * Continuously monitors internet connectivity across Wi-Fi, Mobile Data (Cellular),
+ * Ethernet, and VPN, and drives the seamless handoff between cloud (Firebase)
+ * and mesh (Nearby Connections) modes.
  */
 @Singleton
 class NetworkStateManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private val TAG = "NetworkStateManager"
+
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -54,46 +39,86 @@ class NetworkStateManager @Inject constructor(
 
     /**
      * Reactive flow of internet connectivity changes.
-     * Uses the system [ConnectivityManager.NetworkCallback] under the hood.
+     * Backed by the permanent default network listener.
      */
-    val connectivityFlow: Flow<Boolean> = callbackFlow {
-        val networkRequest = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            .build()
+    val connectivityFlow: Flow<Boolean> = _isInternetAvailable.asStateFlow()
 
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                _isInternetAvailable.value = true
-                _activeTransport.value = NetworkTransport.Cloud
-                trySend(true)
-            }
+    init {
+        // Initial state evaluation on startup
+        updateNetworkState(connectivityManager.activeNetwork)
 
-            override fun onLost(network: Network) {
-                _isInternetAvailable.value = false
-                _activeTransport.value = NetworkTransport.Offline
-                trySend(false)
-            }
-
-            override fun onCapabilitiesChanged(
-                network: Network,
-                caps: NetworkCapabilities
-            ) {
-                val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                _isInternetAvailable.value = hasInternet
-                if (hasInternet) {
-                    _activeTransport.value = NetworkTransport.Cloud
+        // Register default network callback for real-time tracking across Wi-Fi & Cellular
+        try {
+            val defaultCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.i(TAG, "Default network available: $network")
+                    updateNetworkState(network)
                 }
-                trySend(hasInternet)
+
+                override fun onLost(network: Network) {
+                    Log.i(TAG, "Network lost: $network. Checking fallback active network...")
+                    // Check if another network (e.g. mobile data after Wi-Fi lost) is active
+                    updateNetworkState(connectivityManager.activeNetwork)
+                }
+
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    val online = isNetworkConnected(caps)
+                    val isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                    val isWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    Log.i(TAG, "Network caps changed: online=$online (Cellular=$isCellular, Wi-Fi=$isWifi)")
+                    
+                    _isInternetAvailable.value = online
+                    if (online) {
+                        _activeTransport.value = NetworkTransport.Cloud
+                    } else if (_activeTransport.value == NetworkTransport.Cloud) {
+                        _activeTransport.value = NetworkTransport.Offline
+                    }
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                connectivityManager.registerDefaultNetworkCallback(defaultCallback)
+            } else {
+                val request = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                connectivityManager.registerNetworkCallback(request, defaultCallback)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register default network callback: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Evaluates whether a network or set of capabilities has active internet access.
+     * Supports both Wi-Fi and Mobile Data (Cellular) without strictly requiring
+     * NET_CAPABILITY_VALIDATED (which can be delayed or fail captive-portal pings on cellular).
+     */
+    fun isNetworkConnected(caps: NetworkCapabilities?): Boolean {
+        if (caps == null) return false
+        val hasInternetCapability = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        val hasValidTransport = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        return hasInternetCapability && hasValidTransport
+    }
+
+    private fun updateNetworkState(network: Network?) {
+        val caps = network?.let { connectivityManager.getNetworkCapabilities(it) }
+            ?: connectivityManager.activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
+        val online = isNetworkConnected(caps)
+        Log.i(TAG, "Updating network state: online=$online (activeNetwork=$network)")
+        
+        _isInternetAvailable.value = online
+        if (online) {
+            _activeTransport.value = NetworkTransport.Cloud
+        } else {
+            if (_activeTransport.value == NetworkTransport.Cloud) {
+                _activeTransport.value = NetworkTransport.Offline
             }
         }
-
-        connectivityManager.registerNetworkCallback(networkRequest, callback)
-
-        awaitClose {
-            connectivityManager.unregisterNetworkCallback(callback)
-        }
-    }.distinctUntilChanged()
+    }
 
     /**
      * Called by [MeshConnectionManager] when a Nearby Connections peer
@@ -112,7 +137,6 @@ class NetworkStateManager @Inject constructor(
     private fun checkCurrentConnectivity(): Boolean {
         val activeNetwork = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return isNetworkConnected(capabilities)
     }
 }

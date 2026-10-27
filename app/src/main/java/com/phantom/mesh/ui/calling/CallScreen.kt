@@ -4,8 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.view.TextureView
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -67,6 +65,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
+import com.phantom.mesh.calling.CallTransportMode
 import com.phantom.mesh.calling.CallType
 import com.phantom.mesh.calling.CameraVideoEngine
 import com.phantom.mesh.ui.theme.DarkBackground
@@ -90,22 +89,6 @@ fun CallOverlayScreen(
     onEndCall: () -> Unit
 ) {
     val context = LocalContext.current
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ -> }
-
-    LaunchedEffect(call.status) {
-        val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.RECORD_AUDIO)
-        }
-        if (call.callType == CallType.VIDEO && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.CAMERA)
-        }
-        if (needed.isNotEmpty()) {
-            permissionLauncher.launch(needed.toTypedArray())
-        }
-    }
 
     Dialog(
         onDismissRequest = { /* Prevent accidental dismissal during active call */ },
@@ -145,9 +128,17 @@ fun CallOverlayScreen(
                             .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
                     ) {
                         // Remote Video Stream Container (Live Frames or Connecting HUD)
-                        if (call.remoteVideoBitmap != null) {
+                        val remoteBmp = call.remoteVideoBitmap
+                        var imageBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
+                        if (remoteBmp != null && !remoteBmp.isRecycled) {
+                            try {
+                                imageBitmap = remoteBmp.asImageBitmap()
+                            } catch (_: Exception) {}
+                        }
+
+                        if (imageBitmap != null) {
                             Image(
-                                bitmap = call.remoteVideoBitmap.asImageBitmap(),
+                                bitmap = imageBitmap,
                                 contentDescription = "Remote Video Stream",
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
@@ -172,7 +163,7 @@ fun CallOverlayScreen(
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "LIVE E2EE FEED",
+                                        text = if (call.transportMode == CallTransportMode.SAME_WIFI_LAN) "LOCAL WI-FI DIRECT (P2P LAN)" else "CLOUD RELAY STREAM",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = NeonGreen,
                                         fontSize = 9.sp,
@@ -229,11 +220,15 @@ fun CallOverlayScreen(
                                         TextureView(ctx).apply {
                                             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                                 override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                                                    CameraVideoEngine.updatePreviewSurface(ctx, surface)
+                                                    try {
+                                                        CameraVideoEngine.attachPreview(this@apply, surface)
+                                                    } catch (_: Exception) {}
                                                 }
                                                 override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
                                                 override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                                                    CameraVideoEngine.updatePreviewSurface(ctx, null)
+                                                    try {
+                                                        CameraVideoEngine.detachPreview()
+                                                    } catch (_: Exception) {}
                                                     return true
                                                 }
                                                 override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
@@ -282,26 +277,66 @@ fun CallOverlayScreen(
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(DarkCard.copy(alpha = 0.8f))
-                            .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                        horizontalArrangement = Arrangement.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Security,
-                            contentDescription = null,
-                            tint = NeonCyan,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (call.callType == CallType.VIDEO) "E2EE VIDEO CALL (HIGH BANDWIDTH)" else "E2EE VOICE CALL",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = NeonCyan,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        // Security Badge
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(DarkCard.copy(alpha = 0.8f))
+                                .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (call.callType == CallType.VIDEO) "E2EE VIDEO" else "E2EE VOICE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NeonCyan,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Real-Time Network Transport Badge (Local Wi-Fi LAN vs Cloud Relay vs Mesh)
+                        val (modeText, modeColor) = when (call.transportMode) {
+                            CallTransportMode.SAME_WIFI_LAN -> Pair("🟢 LOCAL WI-FI (LAN <5ms)", NeonGreen)
+                            CallTransportMode.CLOUD_RELAY -> Pair("☁️ CLOUD RELAY (FIREBASE)", NeonCyan)
+                            CallTransportMode.BLUETOOTH_MESH -> Pair("📶 BLUETOOTH MESH", Color(0xFFFFB74D))
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(DarkCard.copy(alpha = 0.8f))
+                                .border(1.dp, modeColor.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(modeColor)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = modeText,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = modeColor,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -436,19 +471,7 @@ fun CallOverlayScreen(
                                         .size(64.dp)
                                         .clip(CircleShape)
                                         .background(NeonGreen)
-                                        .clickable {
-                                            val needed = mutableListOf<String>()
-                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                                                needed.add(Manifest.permission.RECORD_AUDIO)
-                                            }
-                                            if (call.callType == CallType.VIDEO && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                                                needed.add(Manifest.permission.CAMERA)
-                                            }
-                                            if (needed.isNotEmpty()) {
-                                                permissionLauncher.launch(needed.toTypedArray())
-                                            }
-                                            onAccept()
-                                        },
+                                        .clickable { onAccept() },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(

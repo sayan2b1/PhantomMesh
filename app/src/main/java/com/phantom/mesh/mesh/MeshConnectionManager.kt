@@ -146,16 +146,26 @@ class MeshConnectionManager @Inject constructor(
                         }
                     }
                 }
+                var cycleCount = 0
                 while (true) {
-                    kotlinx.coroutines.delay(8000)
+                    kotlinx.coroutines.delay(5000)
+                    cycleCount++
                     try {
-                        if (!isAdvertising) {
-                            android.util.Log.d(TAG, "Liveness heartbeat: restarting advertising")
-                            startAdvertising()
-                        }
-                        if (!isDiscovering) {
-                            android.util.Log.d(TAG, "Liveness heartbeat: restarting discovery")
+                        // If no peers are currently connected, cycle discovery every 15 seconds to flush stale Nearby endpoints and rediscover
+                        if (!routingTable.hasPeers() && cycleCount % 3 == 0) {
+                            android.util.Log.d(TAG, "Liveness heartbeat: cycling discovery to refresh nearby peers")
+                            stopDiscovering()
+                            kotlinx.coroutines.delay(300)
                             startDiscovering()
+                        } else {
+                            if (!isAdvertising) {
+                                android.util.Log.d(TAG, "Liveness heartbeat: restarting advertising")
+                                startAdvertising()
+                            }
+                            if (!isDiscovering) {
+                                android.util.Log.d(TAG, "Liveness heartbeat: restarting discovery")
+                                startDiscovering()
+                            }
                         }
                     } catch (e: Exception) {
                         android.util.Log.w(TAG, "Liveness heartbeat error: ${e.message}")
@@ -269,7 +279,6 @@ class MeshConnectionManager @Inject constructor(
         try {
             val options = AdvertisingOptions.Builder()
                 .setStrategy(Strategy.P2P_CLUSTER)
-                .setDisruptiveUpgrade(false)
                 .build()
 
             val nameToAdvertise = localDisplayName.ifBlank { sessionManager.getUsername() ?: "User" }
@@ -368,8 +377,13 @@ class MeshConnectionManager @Inject constructor(
                 ).addOnSuccessListener {
                     android.util.Log.i(TAG, "Connection request sent to $endpointId")
                 }.addOnFailureListener { e ->
-                    pendingConnections.remove(endpointId)
-                    android.util.Log.w(TAG, "Failed requesting connection to $endpointId: ${e.message}")
+                    val statusCode = (e as? com.google.android.gms.common.api.ApiException)?.statusCode
+                    if (statusCode == ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT || statusCode == 8003) {
+                        android.util.Log.i(TAG, "Already pending/connected to $endpointId, awaiting handshake (code=$statusCode)")
+                    } else {
+                        pendingConnections.remove(endpointId)
+                        android.util.Log.w(TAG, "Failed requesting connection to $endpointId: ${e.message}")
+                    }
                 }
             }
         }
@@ -401,7 +415,12 @@ class MeshConnectionManager @Inject constructor(
                     android.util.Log.i(TAG, "Accepted connection handshake with $endpointId")
                 }
                 .addOnFailureListener { e ->
-                    android.util.Log.e(TAG, "Failed to accept connection with $endpointId: ${e.message}", e)
+                    val statusCode = (e as? com.google.android.gms.common.api.ApiException)?.statusCode
+                    if (statusCode == ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT) {
+                        android.util.Log.i(TAG, "Already connected to $endpointId")
+                    } else {
+                        android.util.Log.e(TAG, "Failed to accept connection with $endpointId: ${e.message}", e)
+                    }
                 }
         }
 
