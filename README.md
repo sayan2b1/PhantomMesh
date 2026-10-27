@@ -25,9 +25,35 @@
 - **Automatic Fallback**: Transparently switches between Firebase (Firestore / Firebase Storage) when internet is active and Nearby Connections P2P Mesh when offline.
 - **Delivery Receipts**: Single check (saved/queued), double check (mesh sent / cloud delivered), and blue checks (read/peer ACK confirmed).
 
+### 🎵 WhatsApp-Style Audio & Music Sharing
+- **Device-Wide Audio Browser**: Seamlessly scans device storage via Android's `MediaStore` without navigating messy file picker directories.
+- **Instant Pre-Send Audio Preview**: Built-in Play/Pause player (`▶` / `⏸`) directly in the selection list to listen to songs and recordings before sending.
+- **Track Metadata & Search**: Displays song titles, duration, and file size (`00:14 • 296 kB`) with real-time title search filtering.
+- **In-Bubble Audio Track Player**: Neon-styled chat bubble with glowing progress track, audio tags, and mutually exclusive playback with voice notes.
+
+### 📎 Categorized Attachment Hub
+- **Photos & Videos**: Visual Media Picker filtered by device albums.
+- **Music**: Direct WhatsApp-style audio track browser with pre-send audio preview.
+- **Documents**: System file picker for documents, PDFs, and archives.
+- **Contacts**: Phonebook picker sharing contacts as interactive cards with one-tap dialing.
+
+### 🏷️ Custom Contact Naming & Dual Display
+- **Custom Nicknames**: Assign personalized names to any peer (e.g. `Sayan Dolai (sayan2b1)`).
+- **Dual Display Everywhere**: Both custom alias and network username appear together across chat headers, conversation lists, nearby peer chips, and push notifications.
+- **Live Edit**: Tap on the contact name inside the chat or long-press any conversation in the chat list to update or reset custom aliases with live previews.
+
+### 🖼️ Custom Chat Wallpapers & Themes
+- **Personalized Chat Backgrounds**: Set custom wallpaper images from the device gallery.
+- **High-Contrast Scrim**: 55% dark scrim overlay automatically applied to ensure high-contrast readability of neon chat bubbles over any wallpaper.
+
+### 🔔 Smart Background & In-App Notifications
+- **High-Priority Heads-Up Channel**: Message alerts with sound and vibration even when the app is in the background or device is locked.
+- **Sender Aliasing**: Notification titles automatically reflect custom contact nicknames.
+- **Active Chat Suppression**: Intelligently suppresses notifications for the currently open chat to eliminate notification noise during active conversations.
+
 ### 🗑️ "Delete for Everyone" Across All Media Types
 - **Full Media Purge**: Deletes messages from sender and recipient devices.
-- **Supported Formats**: Text, images, videos, and voice messages.
+- **Supported Formats**: Text, images, videos, audio tracks, and voice messages.
 - **Deep Clean**: Purges app internal directories (`received_media`, `voice_notes`), Coil in-memory/disk caches, SQLite Room database entries, and external gallery directories via `MediaStore`.
 - **Mesh-Wide Deletion Broadcast**: Broadcasts `delete_msg` packets across the mesh to purge relay nodes and peer devices automatically.
 
@@ -66,11 +92,11 @@ graph TD
 - **Language**: Kotlin 1.9+
 - **UI Framework**: Jetpack Compose with Material 3 & Custom Neon/Dark Stealth Palette
 - **Dependency Injection**: Dagger Hilt
-- **Persistence**: Room Database (SQLite) + Encrypted SharedPreferences
+- **Persistence**: Room Database (SQLite) + Encrypted SharedPreferences + DataStore
 - **Asynchronous / Reactive**: Kotlin Coroutines, StateFlow, SharedFlow
-- **Media Engine**: Android `MediaRecorder` + `MediaPlayer` + Coil Image Loader
+- **Media Engine**: Android `MediaRecorder` + `MediaPlayer` + Coil Image Loader + `MediaStore` API
 - **Offline Mesh Transport**: Google Play Services Nearby Connections API (`P2P_CLUSTER`)
-- **Cloud Backend**: Firebase Authentication, Cloud Firestore, Firebase Cloud Storage
+- **Cloud Backend**: Firebase Authentication, Cloud Firestore, Firebase Cloud Storage, Firebase Cloud Messaging
 
 ---
 
@@ -84,7 +110,10 @@ PhantomMesh requires the following system permissions to operate the hybrid mesh
 | `NEARBY_WIFI_DEVICES` | Wi-Fi Direct and local hotspot bandwidth upgrades (Android 13+) |
 | `ACCESS_FINE_LOCATION` | Required by Android for BLE beacon scanning |
 | `RECORD_AUDIO` | High-fidelity voice notes recording |
-| `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` / `READ_MEDIA_AUDIO` | Media attachments and gallery export/cleanup |
+| `READ_MEDIA_AUDIO` / `READ_EXTERNAL_STORAGE` | WhatsApp-style device audio track scanning and playback |
+| `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` | Media attachments and gallery export/cleanup |
+| `READ_CONTACTS` | Device contact card sharing with dial actions |
+| `POST_NOTIFICATIONS` | High-priority incoming message notifications (Android 13+) |
 
 > ℹ️ **Note**: Location services (GPS) must be enabled on Android devices for Nearby Connections beacon discovery.
 
@@ -142,7 +171,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 3. Turn **Wi-Fi OFF** on both devices and ensure **Bluetooth** and **Location** are turned **ON**.
 4. Both devices will automatically discover each other via Nearby Connections.
 5. Tap on the discovered peer chip on the home screen or open **Mesh Topology** (`Hub` icon) and tap **CHAT**.
-6. Send text, photos, videos, or voice notes — all communication will route 100% peer-to-peer over Bluetooth!
+6. Send text, photos, videos, audio tracks, or voice notes — all communication will route 100% peer-to-peer over Bluetooth!
 
 ---
 
