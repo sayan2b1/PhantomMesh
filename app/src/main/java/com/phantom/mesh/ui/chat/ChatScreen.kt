@@ -22,7 +22,21 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.material.icons.filled.Phone
+import com.phantom.mesh.ui.calling.CallOverlayScreen
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -74,6 +88,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
@@ -98,7 +113,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -154,6 +171,7 @@ fun ChatScreen(
     var inputMessage by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var selectedMessageForDelete by remember { mutableStateOf<MessageEntity?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
@@ -294,23 +312,49 @@ fun ChatScreen(
         uri?.let { viewModel.setWallpaperFromUri(context, it) }
     }
 
+    // Voice call permission launcher (Microphone on-demand)
+    val voiceCallPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.startVoiceCall()
+        } else {
+            Toast.makeText(context, "Microphone permission is required for voice calls", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Video call permission launcher (Microphone & Camera on-demand)
+    val videoCallPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val micOk = perms[Manifest.permission.RECORD_AUDIO] == true
+        val camOk = perms[Manifest.permission.CAMERA] == true
+        if (micOk && camOk) {
+            viewModel.startVideoCall()
+        } else {
+            Toast.makeText(context, "Camera & Microphone permissions required for video calls", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val oldestUnreadIndex = remember(messages, unreadMessageIds) {
         if (unreadMessageIds.isEmpty()) -1
         else messages.indexOfLast { unreadMessageIds.contains(it.messageId) }
     }
 
-    // Auto-scroll to unread divider on entry, or latest message
-    var hasScrolledToUnread by remember { mutableStateOf(false) }
-    LaunchedEffect(messages.size, oldestUnreadIndex) {
-        if (messages.isNotEmpty()) {
-            if (!hasScrolledToUnread && oldestUnreadIndex > 0) {
-                listState.animateScrollToItem(oldestUnreadIndex)
-                hasScrolledToUnread = true
-            } else if (!hasScrolledToUnread && oldestUnreadIndex == 0) {
-                listState.animateScrollToItem(0)
-                hasScrolledToUnread = true
-            } else if (hasScrolledToUnread) {
-                listState.animateScrollToItem(0)
+    // Anchor chat view to last read message / unread divider on entry.
+    // Unread messages appear below it, requiring user to scroll down to view them.
+    var hasScrolledToInitialPosition by remember { mutableStateOf(false) }
+    LaunchedEffect(messages.isNotEmpty(), oldestUnreadIndex) {
+        if (messages.isNotEmpty() && !hasScrolledToInitialPosition) {
+            if (oldestUnreadIndex > 0) {
+                listState.scrollToItem(oldestUnreadIndex)
+                hasScrolledToInitialPosition = true
+            } else if (oldestUnreadIndex == 0) {
+                listState.scrollToItem(0)
+                hasScrolledToInitialPosition = true
+            } else if (unreadMessageIds.isEmpty()) {
+                listState.scrollToItem(0)
+                hasScrolledToInitialPosition = true
             }
         }
     }
@@ -370,6 +414,42 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // Voice Call Button
+                    IconButton(
+                        onClick = {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                viewModel.startVoiceCall()
+                            } else {
+                                voiceCallPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Phone,
+                            contentDescription = "Voice Call",
+                            tint = NeonCyan
+                        )
+                    }
+
+                    // Video Call Button
+                    IconButton(
+                        onClick = {
+                            val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                            val hasCam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                            if (hasAudio && hasCam) {
+                                viewModel.startVideoCall()
+                            } else {
+                                videoCallPermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VideoLibrary,
+                            contentDescription = "Video Call",
+                            tint = NeonCyan
+                        )
+                    }
+
                     // Dynamic Network Indicator in Top App Bar
                     NetworkIndicator(transport = transport, showLabel = true)
 
@@ -484,6 +564,14 @@ fun ChatScreen(
                                    (currentUsername != null && message.senderId.equals(currentUsername, ignoreCase = true))
                         val isUnread = unreadMessageIds.contains(message.messageId)
 
+                        // In reverseLayout = true, render UnreadMessagesDivider at the top of the oldest unread item
+                        // placing it directly between the last read message (above) and the first unread message (below)
+                        if (index == oldestUnreadIndex && unreadMessageIds.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            UnreadMessagesDivider(count = unreadMessageIds.size)
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+
                         Box(modifier = Modifier.animateItem()) {
                             MessageBubble(
                                 message = message,
@@ -495,6 +583,7 @@ fun ChatScreen(
                                 fontFamily = chatFontFamily,
                                 fontSize = chatFontSize,
                                 readReceiptsEnabled = readReceiptsEnabled,
+                                onReply = { msg -> viewModel.setReplyingTo(msg) },
                                 onLongClick = {
                                     if (message.content != "🚫 This message was deleted" && message.dataType != "deleted") {
                                         selectedMessageForDelete = message
@@ -503,13 +592,64 @@ fun ChatScreen(
                             )
                         }
 
-                        // In reverseLayout = true, rendering after the oldest unread index places the divider ABOVE it
-                        if (index == oldestUnreadIndex && unreadMessageIds.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            UnreadMessagesDivider(count = unreadMessageIds.size)
-                            Spacer(modifier = Modifier.height(6.dp))
-                        } else {
-                            Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+                }
+
+                // Swipe to Reply Active Preview Banner
+                val activeReply by viewModel.activeReply.collectAsState()
+                AnimatedVisibility(
+                    visible = activeReply != null,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    activeReply?.let { reply ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(DarkCard)
+                                .border(1.dp, NeonCyan.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.5.dp)
+                                    .height(34.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(NeonCyan)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Replying to ${reply.senderName}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NeonCyan,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    text = reply.contentSnippet,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.cancelReply() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cancel Reply",
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -524,6 +664,9 @@ fun ChatScreen(
                         if (inputMessage.isNotBlank()) {
                             viewModel.sendMessage(inputMessage)
                             inputMessage = ""
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(0)
+                            }
                         }
                     },
                     onSendVoiceMessage = { file, durationMs ->
@@ -910,6 +1053,58 @@ fun ChatScreen(
             containerColor = DarkCard
         )
     }
+
+    // Calling Restricted Alert Dialog (when on Bluetooth Mesh due to ~2 KB/s data send rate)
+    val callBlockedNotice by viewModel.callBlockedNotice.collectAsState()
+    if (callBlockedNotice != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.clearCallBlockedNotice() },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = DuressCrimson,
+                    modifier = Modifier.size(36.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Video Calling Restricted on Bluetooth",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 15.sp
+                )
+            },
+            text = {
+                Text(
+                    text = callBlockedNotice ?: "",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.clearCallBlockedNotice() }) {
+                    Text("UNDERSTOOD", color = NeonCyan, fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
+
+    // Active Call Overlay Screen
+    val activeCall by viewModel.currentCall.collectAsState()
+    activeCall?.let { call ->
+        CallOverlayScreen(
+            call = call,
+            onMuteToggle = { viewModel.toggleCallMute() },
+            onSpeakerToggle = { viewModel.toggleCallSpeaker() },
+            onVideoToggle = { viewModel.toggleCallVideo() },
+            onFlipCamera = { viewModel.flipCallCamera() },
+            onAccept = { viewModel.acceptIncomingCall() },
+            onEndCall = { viewModel.endCall() }
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -924,6 +1119,7 @@ fun MessageBubble(
     fontFamily: androidx.compose.ui.text.font.FontFamily = androidx.compose.ui.text.font.FontFamily.Default,
     fontSize: androidx.compose.ui.unit.TextUnit = 15.sp,
     readReceiptsEnabled: Boolean = true,
+    onReply: (MessageEntity) -> Unit = {},
     onLongClick: () -> Unit = {}
 ) {
     val timeFormatted = remember(message.timestamp) {
@@ -932,13 +1128,77 @@ fun MessageBubble(
 
     val isDeleted = message.content == "🚫 This message was deleted" || message.dataType == "deleted"
 
+    // Horizontal swipe-to-reply state with spring resistance and haptic feedback
+    var dragOffsetX by remember { mutableStateOf(0f) }
+    val animatedOffset by animateFloatAsState(
+        targetValue = dragOffsetX,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "swipeToReplyOffset"
+    )
+    val haptic = LocalHapticFeedback.current
+    var hapticTriggered by remember { mutableStateOf(false) }
+
     Box(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(message.messageId) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        if (dragOffsetX >= 60f) {
+                            onReply(message)
+                        }
+                        dragOffsetX = 0f
+                        hapticTriggered = false
+                    },
+                    onDragCancel = {
+                        dragOffsetX = 0f
+                        hapticTriggered = false
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        // Only swipe right
+                        val next = (dragOffsetX + dragAmount).coerceIn(0f, 110f)
+                        dragOffsetX = next
+                        if (next >= 60f && !hapticTriggered) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            hapticTriggered = true
+                        }
+                    }
+                )
+            },
         contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
     ) {
+        // Behind-the-bubble animated reply icon
+        if (animatedOffset > 8f) {
+            val progress = (animatedOffset / 60f).coerceIn(0f, 1f)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 8.dp)
+                    .size(30.dp)
+                    .scale(progress)
+                    .clip(CircleShape)
+                    .background(if (progress >= 1f) NeonCyan else DarkCard)
+                    .border(1.dp, NeonCyan, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Reply",
+                    tint = if (progress >= 1f) DarkBackground else NeonCyan,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+
         Column(
             horizontalAlignment = if (isMe) Alignment.End else Alignment.Start,
-            modifier = Modifier.widthIn(max = 280.dp)
+            modifier = Modifier
+                .offset { IntOffset(animatedOffset.toInt(), 0) }
+                .widthIn(max = 280.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -971,6 +1231,46 @@ fun MessageBubble(
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 Column {
+                    // Quoted message preview if this message is a reply
+                    if (!isDeleted && !message.replyToContent.isNullOrBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 6.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(DarkBackground.copy(alpha = 0.45f))
+                                .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(28.dp)
+                                        .clip(RoundedCornerShape(1.5.dp))
+                                        .background(NeonCyan)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(
+                                        text = message.replyToSender ?: "Replied message",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NeonCyan,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp
+                                    )
+                                    Text(
+                                        text = message.replyToContent,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
                     if (isDeleted) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(

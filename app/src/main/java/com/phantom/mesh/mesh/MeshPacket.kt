@@ -48,7 +48,17 @@ data class MeshPacket(
 
     /** File size hint for priority queue ordering (0 for text) */
     @SerializedName("payload_size")
-    val payloadSize: Long = 0L
+    val payloadSize: Long = 0L,
+
+    /** Quoted message metadata for swipe-to-reply */
+    @SerializedName("reply_to_message_id")
+    val replyToMessageId: String? = null,
+
+    @SerializedName("reply_to_content")
+    val replyToContent: String? = null,
+
+    @SerializedName("reply_to_sender")
+    val replyToSender: String? = null
 ) {
     companion object {
         const val MAX_HOPS = 3

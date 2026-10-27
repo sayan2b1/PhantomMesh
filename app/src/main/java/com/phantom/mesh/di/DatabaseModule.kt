@@ -22,6 +22,16 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE users ADD COLUMN security_question TEXT DEFAULT NULL")
+            db.execSQL("ALTER TABLE users ADD COLUMN security_answer_hash TEXT DEFAULT NULL")
+            db.execSQL("ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT DEFAULT NULL")
+            db.execSQL("ALTER TABLE messages ADD COLUMN reply_to_content TEXT DEFAULT NULL")
+            db.execSQL("ALTER TABLE messages ADD COLUMN reply_to_sender TEXT DEFAULT NULL")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): PhantomMeshDatabase {
@@ -30,6 +40,7 @@ object DatabaseModule {
             PhantomMeshDatabase::class.java,
             PhantomMeshDatabase.DATABASE_NAME
         )
+            .addMigrations(MIGRATION_2_3)
             .fallbackToDestructiveMigration()
             .build()
     }

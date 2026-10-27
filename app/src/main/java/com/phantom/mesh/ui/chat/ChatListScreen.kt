@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -656,7 +657,8 @@ fun ChatItem(
                 Text(
                     text = timeFormatted,
                     style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted
+                    color = if (chat.unreadCount > 0) com.phantom.mesh.ui.theme.NeonGreen else TextMuted,
+                    fontWeight = if (chat.unreadCount > 0) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal
                 )
             }
 
@@ -670,7 +672,7 @@ fun ChatItem(
                 Text(
                     text = chat.lastMessagePreview ?: "No messages yet",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
+                    color = if (chat.unreadCount > 0) TextPrimary else TextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -696,6 +698,7 @@ fun ChatItem(
                     Spacer(modifier = Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
+                            .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
                             .clip(CircleShape)
                             .background(com.phantom.mesh.ui.theme.NeonGreen)
                             .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -704,8 +707,8 @@ fun ChatItem(
                         Text(
                             text = if (chat.unreadCount > 99) "99+" else chat.unreadCount.toString(),
                             color = com.phantom.mesh.ui.theme.DarkBackground,
-                            fontSize = 10.sp,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontSize = 11.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace
                         )
                     }

@@ -65,6 +65,7 @@ class ChatListViewModel @Inject constructor(
             val userId = sessionManager.getUserId()
             val username = sessionManager.getUsername() ?: "Anonymous"
             if (userId != null) {
+                chatRepository.syncUnreadCounts(userId)
                 chatRepository.startCloudListener(userId, username)
                 meshConnectionManager.setLocalIdentity(userId, username)
                 meshConnectionManager.startMesh()

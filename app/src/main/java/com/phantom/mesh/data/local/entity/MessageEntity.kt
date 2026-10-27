@@ -81,5 +81,17 @@ data class MessageEntity(
 
     /** Flag indicating this is a forwarded mesh packet, not originated locally */
     @ColumnInfo(name = "is_forwarded")
-    val isForwarded: Boolean = false
+    val isForwarded: Boolean = false,
+
+    /** ID of the message being replied to (for swipe-to-reply) */
+    @ColumnInfo(name = "reply_to_message_id")
+    val replyToMessageId: String? = null,
+
+    /** Preview snippet of the message being replied to */
+    @ColumnInfo(name = "reply_to_content")
+    val replyToContent: String? = null,
+
+    /** Sender name of the message being replied to */
+    @ColumnInfo(name = "reply_to_sender")
+    val replyToSender: String? = null
 )

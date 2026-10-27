@@ -8,6 +8,11 @@ import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.data.repository.ChatRepository
 import com.phantom.mesh.network.NetworkStateManager
 import com.phantom.mesh.network.NetworkTransport
+import com.phantom.mesh.calling.ActiveCall
+import com.phantom.mesh.calling.CallInitiationResult
+import com.phantom.mesh.calling.CallManager
+import com.phantom.mesh.calling.CallType
+import com.phantom.mesh.util.SoundEffectManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,12 +23,19 @@ import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 
+data class ReplyContext(
+    val messageId: String,
+    val senderName: String,
+    val contentSnippet: String
+)
+
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
     private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager,
+    private val callManager: CallManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -48,6 +60,64 @@ class ChatViewModel @Inject constructor(
     val chatFontStyle: StateFlow<String> = sessionManager.chatFontStyleFlow
     val chatFontSizeScale: StateFlow<String> = sessionManager.chatFontSizeScaleFlow
 
+    // ── SWIPE TO REPLY ───────────────────────────────────────────────────────
+    private val _activeReply = MutableStateFlow<ReplyContext?>(null)
+    val activeReply: StateFlow<ReplyContext?> = _activeReply.asStateFlow()
+
+    fun setReplyingTo(message: MessageEntity) {
+        val myId = _currentUserId.value
+        val sender = if (message.senderId == myId) "You" else getFormattedTargetName().ifBlank { message.senderId }
+        val snippet = when (message.dataType) {
+            "image" -> "📷 Photo"
+            "video" -> "🎥 Video"
+            "voice" -> "🎤 Voice message"
+            "audio" -> "🎵 Audio"
+            else -> message.content ?: ""
+        }
+        _activeReply.value = ReplyContext(
+            messageId = message.messageId,
+            senderName = sender,
+            contentSnippet = snippet.take(80)
+        )
+    }
+
+    fun cancelReply() {
+        _activeReply.value = null
+    }
+
+    // ── CALLING ENGINE ───────────────────────────────────────────────────────
+    val currentCall: StateFlow<ActiveCall?> = callManager.currentCall
+
+    private val _callBlockedNotice = MutableStateFlow<String?>(null)
+    val callBlockedNotice: StateFlow<String?> = _callBlockedNotice.asStateFlow()
+
+    fun clearCallBlockedNotice() {
+        _callBlockedNotice.value = null
+    }
+
+    fun startVoiceCall() {
+        val targetName = getFormattedTargetName().ifBlank { targetId }
+        val result = callManager.startCall(targetName, targetId, CallType.VOICE)
+        if (result is CallInitiationResult.BlockedByTransport) {
+            _callBlockedNotice.value = result.reason
+        }
+    }
+
+    fun startVideoCall() {
+        val targetName = getFormattedTargetName().ifBlank { targetId }
+        val result = callManager.startCall(targetName, targetId, CallType.VIDEO)
+        if (result is CallInitiationResult.BlockedByTransport) {
+            _callBlockedNotice.value = result.reason
+        }
+    }
+
+    fun toggleCallMute() = callManager.toggleMute()
+    fun toggleCallSpeaker() = callManager.toggleSpeaker()
+    fun toggleCallVideo() = callManager.toggleVideo()
+    fun flipCallCamera() = callManager.flipCamera()
+    fun acceptIncomingCall() = callManager.acceptCall()
+    fun endCall() = callManager.endCall()
+
     fun setTargetAlias(alias: String) {
         contactAliasManager.setAlias(targetId, alias)
     }
@@ -67,6 +137,9 @@ class ChatViewModel @Inject constructor(
     private val _unreadMessageIds = MutableStateFlow<Set<String>>(emptySet())
     val unreadMessageIds: StateFlow<Set<String>> = _unreadMessageIds.asStateFlow()
 
+    private var isInitialLoadDone = false
+    private var lastObservedCount = 0
+
     init {
         com.phantom.mesh.util.NotificationHelper.currentActiveChatId = chatId
         viewModelScope.launch {
@@ -82,6 +155,23 @@ class ChatViewModel @Inject constructor(
             // 2. Mark chat as read and dispatch read receipt if enabled
             val readReceiptsOn = sessionManager.isReadReceiptsEnabled()
             chatRepository.markChatAsRead(chatId, myId, sendReadReceipt = readReceiptsOn)
+
+            // 3. Listen for incoming messages to trigger pop-up sound
+            messages.collect { list ->
+                if (!isInitialLoadDone) {
+                    isInitialLoadDone = true
+                    lastObservedCount = list.size
+                } else if (list.size > lastObservedCount) {
+                    val newCount = list.size - lastObservedCount
+                    val newMessages = list.takeLast(newCount)
+                    if (newMessages.any { it.senderId != myId }) {
+                        SoundEffectManager.playMessageReceivedSound()
+                    }
+                    lastObservedCount = list.size
+                } else {
+                    lastObservedCount = list.size
+                }
+            }
         }
     }
 
@@ -94,9 +184,19 @@ class ChatViewModel @Inject constructor(
 
     fun sendMessage(text: String) {
         if (text.isBlank()) return
+        val reply = _activeReply.value
+        _activeReply.value = null
         viewModelScope.launch {
             try {
-                chatRepository.sendTextMessage(chatId, targetId, text.trim())
+                chatRepository.sendTextMessage(
+                    chatId = chatId,
+                    targetId = targetId,
+                    content = text.trim(),
+                    replyToMessageId = reply?.messageId,
+                    replyToContent = reply?.contentSnippet,
+                    replyToSender = reply?.senderName
+                )
+                SoundEffectManager.playMessageSentSound()
             } catch (e: Exception) {
                 android.util.Log.e("ChatViewModel", "Error in sendMessage: ${e.message}", e)
             }
