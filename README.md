@@ -3,6 +3,7 @@
 > **Decentralized, Off-Grid Mesh & Hybrid Cloud Messenger for Android**
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
+[![Version](https://img.shields.io/badge/Version-v2.2.0-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
 [![Language](https://img.shields.io/badge/Language-Kotlin-blue.svg)](https://kotlinlang.org/)
 [![UI](https://img.shields.io/badge/UI-Jetpack%20Compose-purple.svg)](https://developer.android.com/jetpack/compose)
 [![Mesh Engine](https://img.shields.io/badge/Engine-Nearby%20Connections%20P2P-cyan.svg)](https://developers.google.com/nearby/connections/overview)

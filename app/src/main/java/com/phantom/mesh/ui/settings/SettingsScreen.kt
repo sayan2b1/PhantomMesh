@@ -838,7 +838,36 @@ private fun SettingsMainContent(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // App Version Display
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "PhantomMesh v2.2.0",
+                color = NeonCyan,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Decentralized P2P Mesh & Cloud Communicator",
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "End-to-End Encrypted • Zero Tracking",
+                color = TextMuted.copy(alpha = 0.7f),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
