@@ -146,8 +146,16 @@ fun AuthScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "v2.2.0",
+                style = MaterialTheme.typography.labelSmall,
+                color = NeonCyan.copy(alpha = 0.8f),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp
+            )
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Username Field
             OutlinedTextField(
