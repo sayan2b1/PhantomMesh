@@ -1,6 +1,8 @@
 package com.phantom.mesh.calling
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioManager
 import android.util.Base64
 import android.util.Log
@@ -57,7 +59,8 @@ data class ActiveCall(
     val isMuted: Boolean = false,
     val isSpeakerOn: Boolean = false,
     val isVideoEnabled: Boolean = true,
-    val isFrontCamera: Boolean = true
+    val isFrontCamera: Boolean = true,
+    val remoteVideoBitmap: Bitmap? = null
 )
 
 sealed class CallInitiationResult {
@@ -96,6 +99,10 @@ class CallManager @Inject constructor(
 
     private val incomingCallListeners = mutableListOf<ListenerRegistration>()
     private var activeCallDocListener: ListenerRegistration? = null
+    private var remoteAudioListener: ListenerRegistration? = null
+    private var remoteVideoListener: ListenerRegistration? = null
+    private var audioSeq = 0
+    private var videoSeq = 0
 
     init {
         // 1. Listen for incoming calling packets on the Mesh (Bluetooth / Wi-Fi Direct)
@@ -162,7 +169,7 @@ class CallManager @Inject constructor(
 
                             // Accept calls initiated within 2 minutes (tolerates clock skew)
                             if (ageMs < 120_000L || timestamp == 0L) {
-                                if (_currentCall.value == null) {
+                                if (_currentCall.value == null || _currentCall.value?.status == CallStatus.ENDED) {
                                     receiveIncomingCall(callerUsername, callerId, callId, callType, "cloud")
                                 }
                             }
@@ -177,6 +184,44 @@ class CallManager @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to register call snapshot listener: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Listens continuously to the call document for status changes:
+     * - "accepted": connects the outgoing call
+     * - "rejected" or "ended": terminates and cleans up immediately
+     */
+    private fun listenToCallDocument(callId: String) {
+        activeCallDocListener?.remove()
+        try {
+            activeCallDocListener = FirebaseFirestore.getInstance().collection("calls").document(callId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val status = snapshot.getString("status")
+                    val current = _currentCall.value ?: return@addSnapshotListener
+                    if (current.callId != callId) return@addSnapshotListener
+
+                    when (status) {
+                        "accepted" -> {
+                            if (current.status == CallStatus.OUTGOING_CALLING) {
+                                connectCall()
+                            }
+                        }
+                        "rejected" -> {
+                            if (current.status != CallStatus.ENDED) {
+                                onCallEndedRemote("Call Declined")
+                            }
+                        }
+                        "ended" -> {
+                            if (current.status != CallStatus.ENDED) {
+                                onCallEndedRemote("Call Ended")
+                            }
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to attach call document listener: ${e.message}")
         }
     }
 
@@ -267,21 +312,7 @@ class CallManager @Inject constructor(
             )
 
             FirebaseFirestore.getInstance().collection("calls").document(callId).set(callData)
-
-            // Listen for remote answer/rejection on this call document
-            activeCallDocListener?.remove()
-            activeCallDocListener = FirebaseFirestore.getInstance().collection("calls").document(callId)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
-                    val status = snapshot.getString("status")
-                    if (status == "accepted" && _currentCall.value?.status == CallStatus.OUTGOING_CALLING) {
-                        connectCall()
-                    } else if (status == "rejected" || status == "ended") {
-                        if (_currentCall.value != null && _currentCall.value?.status != CallStatus.ENDED) {
-                            onCallEndedRemote(if (status == "rejected") "Call Declined" else "Call Ended")
-                        }
-                    }
-                }
+            listenToCallDocument(callId)
         } catch (e: Exception) {
             Log.w(TAG, "Cloud signaling write failed: ${e.message}")
         }
@@ -317,7 +348,7 @@ class CallManager @Inject constructor(
         callType: CallType,
         transport: String = "mesh"
     ) {
-        if (_currentCall.value != null) {
+        if (_currentCall.value != null && _currentCall.value?.status != CallStatus.ENDED) {
             Log.w(TAG, "Already in a call, ignoring incoming: $callId")
             return
         }
@@ -342,18 +373,8 @@ class CallManager @Inject constructor(
             if (callType == CallType.VIDEO) "Video" else "Voice"
         )
 
-        // Listen for caller hang up before answer
-        if (transport == "cloud") {
-            activeCallDocListener?.remove()
-            activeCallDocListener = FirebaseFirestore.getInstance().collection("calls").document(callId)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
-                    val status = snapshot.getString("status")
-                    if (status == "ended" && _currentCall.value?.status == CallStatus.INCOMING_RINGING) {
-                        onCallEndedRemote("Caller Hung Up")
-                    }
-                }
-        }
+        // Listen continuously for caller cancelling, ending, or status updates
+        listenToCallDocument(callId)
     }
 
     /**
@@ -413,29 +434,159 @@ class CallManager @Inject constructor(
             }
         }
 
-        // Start full-duplex VoIP audio capture & playback
-        startVoipAudio()
+        // Start full-duplex VoIP audio capture & playback across Cloud & Mesh
+        val current = _currentCall.value ?: return
+        startAudioStream(current)
+
+        // If video call, start Camera2 video streaming engine
+        if (current.callType == CallType.VIDEO && current.isVideoEnabled) {
+            startVideoStream(current)
+        }
     }
 
-    private fun startVoipAudio() {
+    private fun startAudioStream(call: ActiveCall) {
         audioVoipEngine?.stop()
+        audioSeq = 0
+        val myRole = if (call.isIncoming) "callee" else "caller"
+        val peerRole = if (call.isIncoming) "caller" else "callee"
+        val firestore = FirebaseFirestore.getInstance()
+
         audioVoipEngine = AudioVoipEngine(context) { pcmChunk ->
-            val call = _currentCall.value
-            if (call?.status == CallStatus.CONNECTED) {
+            val active = _currentCall.value
+            if (active?.status == CallStatus.CONNECTED && !active.isMuted) {
                 val b64 = Base64.encodeToString(pcmChunk, Base64.NO_WRAP)
-                val packet = MeshPacket(
-                    packetId = UUID.randomUUID().toString(),
-                    senderId = sessionManager.getUserId() ?: "local",
-                    targetId = call.peerAddress,
-                    data = b64,
-                    dataType = "call_audio"
-                )
-                meshConnectionManagerProvider.get().sendPacket(packet)
+                val seq = audioSeq++
+
+                // 1. Cloud Firestore rotating chunk documents (chunk_0, chunk_1, chunk_2)
+                try {
+                    val slot = seq % 3
+                    val chunkData = hashMapOf(
+                        "seq" to seq,
+                        "data" to b64,
+                        "ts" to System.currentTimeMillis()
+                    )
+                    firestore.collection("calls").document(call.callId)
+                        .collection("audio_$myRole").document("chunk_$slot")
+                        .set(chunkData)
+                } catch (_: Exception) {}
+
+                // 2. Mesh Nearby Connections packet
+                try {
+                    val packet = MeshPacket(
+                        packetId = UUID.randomUUID().toString(),
+                        senderId = sessionManager.getUserId() ?: "local",
+                        targetId = call.peerAddress,
+                        data = b64,
+                        dataType = "call_audio"
+                    )
+                    meshConnectionManagerProvider.get().sendPacket(packet)
+                } catch (_: Exception) {}
             }
         }
-        audioVoipEngine?.setMuted(_currentCall.value?.isMuted == true)
-        audioVoipEngine?.setSpeakerOn(_currentCall.value?.isSpeakerOn == true)
+        audioVoipEngine?.setMuted(call.isMuted)
+        audioVoipEngine?.setSpeakerOn(call.isSpeakerOn)
         audioVoipEngine?.start()
+
+        // Remote Cloud Audio Listener
+        remoteAudioListener?.remove()
+        try {
+            var lastAudioSeq = -1
+            remoteAudioListener = firestore.collection("calls").document(call.callId)
+                .collection("audio_$peerRole")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
+                    for (doc in snapshot.documents) {
+                        val seq = (doc.getLong("seq") ?: -1L).toInt()
+                        val b64 = doc.getString("data") ?: continue
+                        val ts = doc.getLong("ts") ?: 0L
+                        if (Math.abs(System.currentTimeMillis() - ts) > 2500) continue
+                        if (seq > lastAudioSeq || (lastAudioSeq - seq > 1000)) {
+                            lastAudioSeq = seq
+                            try {
+                                val pcm = Base64.decode(b64, Base64.DEFAULT)
+                                audioVoipEngine?.playRemoteAudio(pcm)
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to listen for remote audio: ${e.message}")
+        }
+    }
+
+    private fun startVideoStream(call: ActiveCall) {
+        videoSeq = 0
+        val myRole = if (call.isIncoming) "callee" else "caller"
+        val peerRole = if (call.isIncoming) "caller" else "callee"
+        val firestore = FirebaseFirestore.getInstance()
+
+        CameraVideoEngine.start(
+            context = context,
+            surfaceTexture = null,
+            frontCamera = call.isFrontCamera
+        ) { jpegBytes ->
+            val active = _currentCall.value
+            if (active?.status == CallStatus.CONNECTED && active.isVideoEnabled) {
+                val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+                val seq = videoSeq++
+
+                // 1. Cloud Firestore rotating frame documents (frame_0, frame_1)
+                try {
+                    val slot = seq % 2
+                    val frameData = hashMapOf(
+                        "seq" to seq,
+                        "data" to b64,
+                        "ts" to System.currentTimeMillis()
+                    )
+                    firestore.collection("calls").document(call.callId)
+                        .collection("video_$myRole").document("frame_$slot")
+                        .set(frameData)
+                } catch (_: Exception) {}
+
+                // 2. Mesh Nearby Connections packet
+                try {
+                    val packet = MeshPacket(
+                        packetId = UUID.randomUUID().toString(),
+                        senderId = sessionManager.getUserId() ?: "local",
+                        targetId = call.peerAddress,
+                        data = b64,
+                        dataType = "call_video"
+                    )
+                    meshConnectionManagerProvider.get().sendPacket(packet)
+                } catch (_: Exception) {}
+            }
+        }
+
+        // Remote Cloud Video Listener
+        remoteVideoListener?.remove()
+        try {
+            var lastVideoSeq = -1
+            remoteVideoListener = firestore.collection("calls").document(call.callId)
+                .collection("video_$peerRole")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
+                    for (doc in snapshot.documents) {
+                        val seq = (doc.getLong("seq") ?: -1L).toInt()
+                        val b64 = doc.getString("data") ?: continue
+                        val ts = doc.getLong("ts") ?: 0L
+                        if (Math.abs(System.currentTimeMillis() - ts) > 3000) continue
+                        if (seq > lastVideoSeq || (lastVideoSeq - seq > 1000)) {
+                            lastVideoSeq = seq
+                            try {
+                                val rawBytes = Base64.decode(b64, Base64.DEFAULT)
+                                val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                                if (bmp != null) {
+                                    _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to listen for remote video: ${e.message}")
+        }
     }
 
     private fun handleIncomingMeshPacket(packet: MeshPacket) {
@@ -484,6 +635,19 @@ class CallManager @Inject constructor(
                     }
                 }
             }
+            "call_video" -> {
+                if (_currentCall.value?.status == CallStatus.CONNECTED) {
+                    try {
+                        val rawBytes = Base64.decode(packet.data, Base64.DEFAULT)
+                        val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                        if (bmp != null) {
+                            _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed decoding incoming mesh video frame: ${e.message}")
+                    }
+                }
+            }
         }
     }
 
@@ -515,8 +679,14 @@ class CallManager @Inject constructor(
      * Toggles local video stream on/off.
      */
     fun toggleVideo() {
-        _currentCall.value = _currentCall.value?.let {
-            it.copy(isVideoEnabled = !it.isVideoEnabled)
+        _currentCall.value = _currentCall.value?.let { current ->
+            val nextEnabled = !current.isVideoEnabled
+            if (!nextEnabled) {
+                CameraVideoEngine.stop()
+            } else {
+                startVideoStream(current)
+            }
+            current.copy(isVideoEnabled = nextEnabled)
         }
     }
 
@@ -524,8 +694,10 @@ class CallManager @Inject constructor(
      * Switches between front and back camera.
      */
     fun flipCamera() {
-        _currentCall.value = _currentCall.value?.let {
-            it.copy(isFrontCamera = !it.isFrontCamera)
+        _currentCall.value = _currentCall.value?.let { current ->
+            val nextFront = !current.isFrontCamera
+            CameraVideoEngine.switchCamera(context, nextFront)
+            current.copy(isFrontCamera = nextFront)
         }
     }
 
@@ -543,6 +715,13 @@ class CallManager @Inject constructor(
 
         audioVoipEngine?.stop()
         audioVoipEngine = null
+
+        CameraVideoEngine.stop()
+
+        remoteAudioListener?.remove()
+        remoteAudioListener = null
+        remoteVideoListener?.remove()
+        remoteVideoListener = null
 
         audioManager?.mode = AudioManager.MODE_NORMAL
         audioManager?.isMicrophoneMute = false
@@ -570,7 +749,7 @@ class CallManager @Inject constructor(
             } catch (_: Exception) {}
         }
 
-        _currentCall.value = _currentCall.value?.copy(status = CallStatus.ENDED)
+        _currentCall.value = _currentCall.value?.copy(status = CallStatus.ENDED, remoteVideoBitmap = null)
 
         scope.launch {
             delay(1200)
@@ -589,6 +768,13 @@ class CallManager @Inject constructor(
         audioVoipEngine?.stop()
         audioVoipEngine = null
 
+        CameraVideoEngine.stop()
+
+        remoteAudioListener?.remove()
+        remoteAudioListener = null
+        remoteVideoListener?.remove()
+        remoteVideoListener = null
+
         audioManager?.mode = AudioManager.MODE_NORMAL
         audioManager?.isMicrophoneMute = false
         audioManager?.isSpeakerphoneOn = false
@@ -596,7 +782,7 @@ class CallManager @Inject constructor(
         activeCallDocListener?.remove()
         activeCallDocListener = null
 
-        _currentCall.value = _currentCall.value?.copy(status = CallStatus.ENDED)
+        _currentCall.value = _currentCall.value?.copy(status = CallStatus.ENDED, remoteVideoBitmap = null)
 
         scope.launch {
             delay(1200)
