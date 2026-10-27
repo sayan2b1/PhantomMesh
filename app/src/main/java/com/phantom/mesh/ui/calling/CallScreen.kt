@@ -1,11 +1,14 @@
 package com.phantom.mesh.ui.calling
 
+import android.graphics.SurfaceTexture
+import android.view.TextureView
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -46,15 +49,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
 import com.phantom.mesh.calling.CallType
+import com.phantom.mesh.calling.CameraVideoEngine
 import com.phantom.mesh.ui.theme.DarkBackground
 import com.phantom.mesh.ui.theme.DarkCard
 import com.phantom.mesh.ui.theme.DuressCrimson
@@ -112,35 +119,72 @@ fun CallOverlayScreen(
                             .background(Color(0xFF0A121D))
                             .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
                     ) {
-                        // Remote Video Stream Simulation HUD
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Person,
-                                contentDescription = null,
-                                tint = NeonCyan.copy(alpha = 0.5f),
-                                modifier = Modifier.size(96.dp)
+                        // Remote Video Stream Container (Live Frames or Connecting HUD)
+                        if (call.remoteVideoBitmap != null) {
+                            Image(
+                                bitmap = call.remoteVideoBitmap.asImageBitmap(),
+                                contentDescription = "Remote Video Stream",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
                             )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "ENCRYPTED HIGH-BANDWIDTH VIDEO FEED",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = NeonCyan.copy(alpha = 0.7f),
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.sp,
-                                letterSpacing = 1.sp
-                            )
-                            Text(
-                                text = "1080p @ 30fps (Hardware H.264 / Wi-Fi / Cloud)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextMuted,
-                                fontSize = 9.sp
-                            )
+
+                            // Cybernetic stream badge
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(16.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(DarkBackground.copy(alpha = 0.75f))
+                                    .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(NeonGreen)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "LIVE E2EE FEED",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NeonGreen,
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        } else {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = NeonCyan.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(96.dp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NeonCyan.copy(alpha = 0.7f),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp,
+                                    letterSpacing = 1.sp
+                                )
+                                Text(
+                                    text = "Connecting Cloud & Mesh Video Engine",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextMuted,
+                                    fontSize = 9.sp
+                                )
+                            }
                         }
 
                         // Local Camera PiP (Picture in Picture)
@@ -148,22 +192,42 @@ fun CallOverlayScreen(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(16.dp)
-                                .size(width = 100.dp, height = 140.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .size(width = 110.dp, height = 150.dp)
+                                .clip(RoundedCornerShape(14.dp))
                                 .background(DarkCard)
-                                .border(1.5.dp, NeonGreen.copy(alpha = 0.6f), RoundedCornerShape(12.dp)),
+                                .border(1.5.dp, NeonGreen.copy(alpha = 0.6f), RoundedCornerShape(14.dp)),
                             contentAlignment = Alignment.Center
                         ) {
                             if (call.isVideoEnabled) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = null,
-                                        tint = NeonGreen,
-                                        modifier = Modifier.size(36.dp)
-                                    )
+                                AndroidView(
+                                    factory = { ctx ->
+                                        TextureView(ctx).apply {
+                                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                                                    CameraVideoEngine.updatePreviewSurface(ctx, surface)
+                                                }
+                                                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
+                                                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                                                    CameraVideoEngine.updatePreviewSurface(ctx, null)
+                                                    return true
+                                                }
+                                                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(bottom = 6.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(Color.Black.copy(alpha = 0.6f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
                                     Text(
-                                        text = if (call.isFrontCamera) "FRONT CAM" else "BACK CAM",
+                                        text = if (call.isFrontCamera) "FRONT" else "BACK",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = NeonGreen,
                                         fontSize = 8.sp,

@@ -32,11 +32,12 @@ class AudioVoipEngine(
 ) {
     companion object {
         private const val TAG = "AudioVoipEngine"
-        private const val SAMPLE_RATE = 16000
+        private const val SAMPLE_RATE = 8000
         private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         private const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        private const val FRAME_SIZE = 640 // 20ms at 16kHz 16-bit mono
+        private const val READ_BUF_SIZE = 640 // Read in 40ms blocks
+        private const val CHUNK_SIZE = 4800   // ~300ms chunks (4800 bytes = 2400 samples at 8kHz)
     }
 
     private val audioScope = CoroutineScope(Dispatchers.IO)
@@ -71,7 +72,7 @@ class AudioVoipEngine(
 
             // 1. Initialize AudioTrack for real-time playback
             val outMinBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, AUDIO_FORMAT)
-            val outBufferSize = maxOf(outMinBufferSize, FRAME_SIZE * 4)
+            val outBufferSize = maxOf(outMinBufferSize, CHUNK_SIZE * 2)
 
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -92,7 +93,7 @@ class AudioVoipEngine(
                 .build()
 
             audioTrack?.play()
-            Log.i(TAG, "AudioTrack initialized and playing")
+            Log.i(TAG, "AudioTrack initialized and playing at $SAMPLE_RATE Hz")
 
             // 2. Check record audio permission before capturing
             val hasMicPerm = ContextCompat.checkSelfPermission(
@@ -106,7 +107,7 @@ class AudioVoipEngine(
             }
 
             val inMinBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, AUDIO_FORMAT)
-            val inBufferSize = maxOf(inMinBufferSize, FRAME_SIZE * 4)
+            val inBufferSize = maxOf(inMinBufferSize, CHUNK_SIZE * 2)
 
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -122,16 +123,25 @@ class AudioVoipEngine(
             }
 
             audioRecord?.startRecording()
-            Log.i(TAG, "AudioRecord started capture")
+            Log.i(TAG, "AudioRecord started capture at $SAMPLE_RATE Hz")
 
-            // 3. Audio capture loop
+            // 3. Audio capture loop with 300ms chunking
             recordingJob = audioScope.launch {
-                val buffer = ByteArray(FRAME_SIZE)
+                val readBuf = ByteArray(READ_BUF_SIZE)
+                val chunkStream = java.io.ByteArrayOutputStream(CHUNK_SIZE)
                 while (isActive && isRunning.get()) {
-                    val read = audioRecord?.read(buffer, 0, FRAME_SIZE) ?: -1
-                    if (read > 0 && !isMuted.get()) {
-                        val packet = buffer.copyOf(read)
-                        onAudioChunkReady(packet)
+                    val read = audioRecord?.read(readBuf, 0, READ_BUF_SIZE) ?: -1
+                    if (read > 0) {
+                        if (!isMuted.get()) {
+                            chunkStream.write(readBuf, 0, read)
+                            if (chunkStream.size() >= CHUNK_SIZE) {
+                                val chunk = chunkStream.toByteArray()
+                                chunkStream.reset()
+                                onAudioChunkReady(chunk)
+                            }
+                        } else {
+                            chunkStream.reset()
+                        }
                     }
                 }
             }
