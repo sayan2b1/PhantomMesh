@@ -321,43 +321,47 @@ class LocalChatBackupManager @Inject constructor(
     fun listAvailableBackups(): List<BackupMetadata> {
         val results = mutableListOf<BackupMetadata>()
         val searchDirs = listOfNotNull(
-            File(context.getExternalFilesDir(null), "backups"),
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), BACKUP_DIR_NAME),
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), BACKUP_DIR_NAME)
+            try { File(context.getExternalFilesDir(null), "backups") } catch (_: Throwable) { null },
+            try { File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), BACKUP_DIR_NAME) } catch (_: Throwable) { null },
+            try { File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), BACKUP_DIR_NAME) } catch (_: Throwable) { null }
         )
 
         val seenNames = mutableSetOf<String>()
 
         for (dir in searchDirs) {
-            if (dir.exists() && dir.isDirectory) {
-                dir.listFiles { _, name -> (name == PRIMARY_BACKUP_FILE_NAME || name.startsWith("phantom_backup_")) && name.endsWith(".json") }?.forEach { file ->
-                    if (seenNames.add(file.name)) {
-                        try {
-                            val payload = gson.fromJson(file.reader(), LocalChatBackupPayload::class.java)
-                            results.add(
-                                BackupMetadata(
-                                    fileName = file.name,
-                                    filePath = file.absolutePath,
-                                    timestamp = payload?.backupTimestamp ?: file.lastModified(),
-                                    sizeBytes = file.length(),
-                                    chatCount = payload?.chats?.size ?: 0,
-                                    messageCount = payload?.messages?.size ?: 0
+            try {
+                if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles { _, name -> (name == PRIMARY_BACKUP_FILE_NAME || name.startsWith("phantom_backup_")) && name.endsWith(".json") }?.forEach { file ->
+                        if (seenNames.add(file.name)) {
+                            try {
+                                val payload = gson.fromJson(file.reader(), LocalChatBackupPayload::class.java)
+                                results.add(
+                                    BackupMetadata(
+                                        fileName = file.name,
+                                        filePath = file.absolutePath,
+                                        timestamp = payload?.backupTimestamp ?: file.lastModified(),
+                                        sizeBytes = file.length(),
+                                        chatCount = payload?.chats?.size ?: 0,
+                                        messageCount = payload?.messages?.size ?: 0
+                                    )
                                 )
-                            )
-                        } catch (_: Exception) {
-                            results.add(
-                                BackupMetadata(
-                                    fileName = file.name,
-                                    filePath = file.absolutePath,
-                                    timestamp = file.lastModified(),
-                                    sizeBytes = file.length(),
-                                    chatCount = 0,
-                                    messageCount = 0
+                            } catch (_: Exception) {
+                                results.add(
+                                    BackupMetadata(
+                                        fileName = file.name,
+                                        filePath = file.absolutePath,
+                                        timestamp = file.lastModified(),
+                                        sizeBytes = file.length(),
+                                        chatCount = 0,
+                                        messageCount = 0
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
+            } catch (e: Throwable) {
+                android.util.Log.w("LocalChatBackupManager", "Cannot inspect backup dir: ${e.message}")
             }
         }
 

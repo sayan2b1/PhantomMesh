@@ -225,12 +225,12 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun getSecurityQuestionForUsername(username: String): String? = withContext(Dispatchers.IO) {
-        val cleanUsername = username.trim().lowercase()
-        val localUser = userDao.getUserByUsername(cleanUsername)
-        if (localUser?.securityQuestion != null) {
-            return@withContext localUser.securityQuestion
-        }
         try {
+            val cleanUsername = username.trim().lowercase()
+            val localUser = userDao.getUserByUsername(cleanUsername)
+            if (localUser?.securityQuestion != null) {
+                return@withContext localUser.securityQuestion
+            }
             if (networkStateManager.isInternetAvailable.value) {
                 val snapshot = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                     .collection("users")
@@ -244,7 +244,7 @@ class AuthRepository @Inject constructor(
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.w("AuthRepository", "Error fetching cloud security question: ${e.message}")
+            android.util.Log.w("AuthRepository", "Error fetching security question: ${e.message}")
         }
         null
     }
