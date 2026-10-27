@@ -1,7 +1,11 @@
 package com.phantom.mesh.ui.calling
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.view.TextureView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -42,6 +46,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +56,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -58,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
 import com.phantom.mesh.calling.CallType
@@ -82,6 +89,24 @@ fun CallOverlayScreen(
     onAccept: () -> Unit,
     onEndCall: () -> Unit
 ) {
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ -> }
+
+    LaunchedEffect(call.status) {
+        val needed = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (call.callType == CallType.VIDEO && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.CAMERA)
+        }
+        if (needed.isNotEmpty()) {
+            permissionLauncher.launch(needed.toTypedArray())
+        }
+    }
+
     Dialog(
         onDismissRequest = { /* Prevent accidental dismissal during active call */ },
         properties = DialogProperties(
@@ -411,7 +436,19 @@ fun CallOverlayScreen(
                                         .size(64.dp)
                                         .clip(CircleShape)
                                         .background(NeonGreen)
-                                        .clickable { onAccept() },
+                                        .clickable {
+                                            val needed = mutableListOf<String>()
+                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                                needed.add(Manifest.permission.RECORD_AUDIO)
+                                            }
+                                            if (call.callType == CallType.VIDEO && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                                                needed.add(Manifest.permission.CAMERA)
+                                            }
+                                            if (needed.isNotEmpty()) {
+                                                permissionLauncher.launch(needed.toTypedArray())
+                                            }
+                                            onAccept()
+                                        },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
