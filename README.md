@@ -42,9 +42,42 @@
 - **Dual Display Everywhere**: Both custom alias and network username appear together across chat headers, conversation lists, nearby peer chips, and push notifications.
 - **Live Edit**: Tap on the contact name inside the chat or long-press any conversation in the chat list to update or reset custom aliases with live previews.
 
-### 🖼️ Custom Chat Wallpapers & Themes
-- **Personalized Chat Backgrounds**: Set custom wallpaper images from the device gallery.
-- **High-Contrast Scrim**: 55% dark scrim overlay automatically applied to ensure high-contrast readability of neon chat bubbles over any wallpaper.
+### 🛡️ Privacy & Read Receipts Control
+- **Read Receipts On/Off**: Toggle double blue checkmarks on/off under *Settings ➔ Privacy & Security*.
+- **Private Mode**: When disabled, sent and received messages retain neutral gray checkmarks (`CheckGray`) without revealing read status to peers.
+- **3-Tier Delivery Tracking**: 1 gray tick (saved/sent), 2 gray ticks (delivered to peer device), 2 blue ticks (read by peer).
+
+### 💬 Unread Message Counters & In-Chat Dividers
+- **Conversation List Badges**: High-contrast unread count badges highlight chats with unread messages.
+- **In-Chat Unread Divider**: A dedicated banner (`——— ● N UNREAD MESSAGES ———`) clearly separates previously read messages from new ones.
+- **`NEW` Badges & Glowing Accents**: Unread message bubbles feature a distinct `NEW` tag and subtle neon accent borders.
+- **Smart Auto-Scroll**: Opening a conversation automatically scrolls to the first unread message.
+
+### 💾 Signal-Style Encrypted Local Chat Backup & Restore
+- **In-Place Append & Rewrite**: Backs up entire message history and chats into a single encrypted file (`phantom_mesh_backup_latest.enc`) without creating duplicate files or cluttering storage.
+- **AES-256-GCM & PBKDF2**: Military-grade client-side encryption protected with custom master passwords.
+- **Automated Background Scheduling**: Android `WorkManager` automated backups with customizable frequencies:
+  - *Daily*, *Weekly*, *Bi-Weekly*, or *Manual Only*.
+- **Instant One-Tap Restore**: Restore complete chat histories across app reinstalls or new devices.
+
+### 🎨 Custom Chat Appearance & Theming
+- **Custom Bubble Color Palettes**: Select custom background colors for sender and receiver bubbles from curated palettes (Neon Cyan, Cyber Green, Matrix Green, Royal Blue, Deep Purple, Crimson Red, Gold Amber, and Stealth Dark variants).
+- **Adaptive Font Style**: Option to use **Device Default** (dynamically inherits the user's phone native typography, such as Samsung One, OnePlus Sans, Google Sans, or Roboto), **Monospace**, **Sans-Serif**, or **Serif**.
+- **Adjustable Text Size**: Choose between *Small (13sp)*, *Medium (15sp)*, *Large (17sp)*, and *Extra Large (19sp)* with real-time live preview.
+- **Personalized Chat Backgrounds**: Set custom wallpaper images from device gallery with automatic 55% dark scrim overlay for optimal contrast.
+
+### ⚡ Adaptive Display Refresh Rate (60Hz / 90Hz / 120Hz / Max)
+- **High-Refresh Display Support**: Dynamically detects hardware display capabilities and switches display modes for high-refresh devices (OnePlus, Samsung Galaxy, Pixel, Xiaomi).
+- **User-Selectable Frequencies**: Force **60 Hz** (battery saving), **90 Hz** (balanced), **120 Hz** (ultra-smooth scrolling), or **Adaptive / Device Max**.
+
+### ⚙️ Modular Settings Architecture
+- Organized into dedicated sub-pages for zero-clutter navigation:
+  - 🎨 **Chat Appearance** (Wallpaper, Bubble Colors, Device Font, Text Size)
+  - 🛡️ **Privacy & Security** (Read Receipts Toggle, Decoy Passphrase, Nuclear Wipe)
+  - ⚡ **Display & Refresh Rate** (Hardware capabilities, refresh rate selector)
+  - 💾 **Chat Backup and Restore** (In-place rewrite, auto-backup schedule, restore)
+  - 👤 **Account & Credentials** (Change username & password)
+  - 🚨 **Emergency Decoy** (Duress PIN & stealth decoy mode)
 
 ### 🔔 Smart Background & In-App Notifications
 - **High-Priority Heads-Up Channel**: Message alerts with sound and vibration even when the app is in the background or device is locked.

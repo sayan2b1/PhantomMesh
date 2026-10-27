@@ -36,6 +36,10 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE chat_id = :chatId ORDER BY timestamp ASC")
     suspend fun getAllMessagesForChat(chatId: String): List<MessageEntity>
 
+    /** All messages across all chats (for full local database backup) */
+    @Query("SELECT * FROM messages ORDER BY timestamp ASC")
+    suspend fun getAllMessages(): List<MessageEntity>
+
     /** Update delivery status for hop-state read receipts */
     @Query("UPDATE messages SET delivery_status = :status WHERE message_id = :messageId")
     suspend fun updateDeliveryStatus(messageId: String, status: String)
@@ -65,6 +69,36 @@ interface MessageDao {
           AND delivery_status != 'read'
     """)
     suspend fun countUnreadInChat(chatId: String, currentUserId: String): Int
+
+    /** Get IDs of all unread incoming messages in a chat */
+    @Query("""
+        SELECT message_id FROM messages 
+        WHERE chat_id = :chatId 
+          AND sender_id != :currentUserId 
+          AND delivery_status != 'read'
+        ORDER BY timestamp ASC
+    """)
+    suspend fun getUnreadMessageIds(chatId: String, currentUserId: String): List<String>
+
+    /** Mark all incoming messages in a chat as read */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'read' 
+        WHERE chat_id = :chatId 
+          AND sender_id != :currentUserId 
+          AND delivery_status != 'read'
+    """)
+    suspend fun markIncomingMessagesAsRead(chatId: String, currentUserId: String)
+
+    /** Mark all sent messages to a peer as read when peer sends read receipt ACK */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'read' 
+        WHERE sender_id = :myUserId 
+          AND target_id = :peerId 
+          AND delivery_status != 'read'
+    """)
+    suspend fun markChatMessagesAsReadByPeer(myUserId: String, peerId: String)
 
     @Query("DELETE FROM messages WHERE chat_id = :chatId")
     suspend fun deleteMessagesForChat(chatId: String)

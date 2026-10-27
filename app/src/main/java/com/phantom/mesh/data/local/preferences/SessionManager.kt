@@ -28,6 +28,17 @@ class SessionManager @Inject constructor(
         private const val KEY_LOGIN_TIMESTAMP = "session_login_timestamp"
         private const val KEY_BLUETOOTH_ONLY_MODE = "session_prefer_bluetooth_only"
         private const val KEY_CHAT_WALLPAPER_PATH = "session_chat_wallpaper_path"
+        private const val KEY_AUTO_BACKUP_FREQUENCY = "session_auto_backup_frequency"
+        private const val KEY_LAST_BACKUP_TIMESTAMP = "session_last_backup_timestamp"
+        private const val KEY_LAST_BACKUP_SIZE = "session_last_backup_size"
+        private const val KEY_LAST_BACKUP_MESSAGE_COUNT = "session_last_backup_message_count"
+        private const val KEY_LAST_BACKUP_PATH = "session_last_backup_path"
+        private const val KEY_READ_RECEIPTS_ENABLED = "session_read_receipts_enabled"
+        private const val KEY_SENDER_BUBBLE_COLOR = "session_sender_bubble_color"
+        private const val KEY_RECEIVER_BUBBLE_COLOR = "session_receiver_bubble_color"
+        private const val KEY_CHAT_FONT_STYLE = "session_chat_font_style"
+        private const val KEY_CHAT_FONT_SIZE_SCALE = "session_chat_font_size_scale"
+        private const val KEY_PREFERRED_REFRESH_RATE = "session_preferred_refresh_rate"
 
         /** 24 Hours in milliseconds */
         const val SESSION_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000L
@@ -54,6 +65,36 @@ class SessionManager @Inject constructor(
     private val _chatWallpaperFlow = MutableStateFlow(prefs.getString(KEY_CHAT_WALLPAPER_PATH, null))
     val chatWallpaperFlow: StateFlow<String?> = _chatWallpaperFlow.asStateFlow()
 
+    private val _autoBackupFrequencyFlow = MutableStateFlow(prefs.getString(KEY_AUTO_BACKUP_FREQUENCY, "MANUAL") ?: "MANUAL")
+    val autoBackupFrequencyFlow: StateFlow<String> = _autoBackupFrequencyFlow.asStateFlow()
+
+    private val _lastBackupTimestampFlow = MutableStateFlow(prefs.getLong(KEY_LAST_BACKUP_TIMESTAMP, 0L))
+    val lastBackupTimestampFlow: StateFlow<Long> = _lastBackupTimestampFlow.asStateFlow()
+
+    private val _lastBackupSizeFlow = MutableStateFlow(prefs.getLong(KEY_LAST_BACKUP_SIZE, 0L))
+    val lastBackupSizeFlow: StateFlow<Long> = _lastBackupSizeFlow.asStateFlow()
+
+    private val _lastBackupMessageCountFlow = MutableStateFlow(prefs.getInt(KEY_LAST_BACKUP_MESSAGE_COUNT, 0))
+    val lastBackupMessageCountFlow: StateFlow<Int> = _lastBackupMessageCountFlow.asStateFlow()
+
+    private val _readReceiptsEnabledFlow = MutableStateFlow(prefs.getBoolean(KEY_READ_RECEIPTS_ENABLED, true))
+    val readReceiptsEnabledFlow: StateFlow<Boolean> = _readReceiptsEnabledFlow.asStateFlow()
+
+    private val _senderBubbleColorFlow = MutableStateFlow(prefs.getString(KEY_SENDER_BUBBLE_COLOR, "#0D3B3F") ?: "#0D3B3F")
+    val senderBubbleColorFlow: StateFlow<String> = _senderBubbleColorFlow.asStateFlow()
+
+    private val _receiverBubbleColorFlow = MutableStateFlow(prefs.getString(KEY_RECEIVER_BUBBLE_COLOR, "#161B22") ?: "#161B22")
+    val receiverBubbleColorFlow: StateFlow<String> = _receiverBubbleColorFlow.asStateFlow()
+
+    private val _chatFontStyleFlow = MutableStateFlow(prefs.getString(KEY_CHAT_FONT_STYLE, "DEVICE") ?: "DEVICE")
+    val chatFontStyleFlow: StateFlow<String> = _chatFontStyleFlow.asStateFlow()
+
+    private val _chatFontSizeScaleFlow = MutableStateFlow(prefs.getString(KEY_CHAT_FONT_SIZE_SCALE, "MEDIUM") ?: "MEDIUM")
+    val chatFontSizeScaleFlow: StateFlow<String> = _chatFontSizeScaleFlow.asStateFlow()
+
+    private val _preferredRefreshRateFlow = MutableStateFlow(prefs.getInt(KEY_PREFERRED_REFRESH_RATE, 0))
+    val preferredRefreshRateFlow: StateFlow<Int> = _preferredRefreshRateFlow.asStateFlow()
+
     /**
      * Persists session credentials immediately and stamps the current time.
      */
@@ -76,6 +117,11 @@ class SessionManager @Inject constructor(
 
     fun getUserId(): String? = prefs.getString(KEY_USER_ID, null)
     fun getUsername(): String? = prefs.getString(KEY_USERNAME, null)
+
+    fun updateUsername(newUsername: String) {
+        prefs.edit().putString(KEY_USERNAME, newUsername).commit()
+        _usernameFlow.value = newUsername
+    }
     fun getCustomToken(): String? {
         val token = prefs.getString(KEY_CUSTOM_TOKEN, null)
         return if (token.isNullOrBlank()) null else token
@@ -97,6 +143,67 @@ class SessionManager @Inject constructor(
             prefs.edit().putString(KEY_CHAT_WALLPAPER_PATH, path).commit()
         }
         _chatWallpaperFlow.value = path
+    }
+
+    fun getAutoBackupFrequency(): String = prefs.getString(KEY_AUTO_BACKUP_FREQUENCY, "MANUAL") ?: "MANUAL"
+
+    fun setAutoBackupFrequency(frequency: String) {
+        prefs.edit().putString(KEY_AUTO_BACKUP_FREQUENCY, frequency).commit()
+        _autoBackupFrequencyFlow.value = frequency
+    }
+
+    fun recordBackupSuccess(timestamp: Long, sizeBytes: Long, messageCount: Int, path: String) {
+        prefs.edit()
+            .putLong(KEY_LAST_BACKUP_TIMESTAMP, timestamp)
+            .putLong(KEY_LAST_BACKUP_SIZE, sizeBytes)
+            .putInt(KEY_LAST_BACKUP_MESSAGE_COUNT, messageCount)
+            .putString(KEY_LAST_BACKUP_PATH, path)
+            .commit()
+
+        _lastBackupTimestampFlow.value = timestamp
+        _lastBackupSizeFlow.value = sizeBytes
+        _lastBackupMessageCountFlow.value = messageCount
+    }
+
+    fun getLastBackupTimestamp(): Long = prefs.getLong(KEY_LAST_BACKUP_TIMESTAMP, 0L)
+    fun getLastBackupSize(): Long = prefs.getLong(KEY_LAST_BACKUP_SIZE, 0L)
+    fun getLastBackupMessageCount(): Int = prefs.getInt(KEY_LAST_BACKUP_MESSAGE_COUNT, 0)
+    fun getLastBackupPath(): String? = prefs.getString(KEY_LAST_BACKUP_PATH, null)
+
+    fun isReadReceiptsEnabled(): Boolean = prefs.getBoolean(KEY_READ_RECEIPTS_ENABLED, true)
+    fun setReadReceiptsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_READ_RECEIPTS_ENABLED, enabled).commit()
+        _readReceiptsEnabledFlow.value = enabled
+    }
+
+    fun getSenderBubbleColor(): String = prefs.getString(KEY_SENDER_BUBBLE_COLOR, "#0D3B3F") ?: "#0D3B3F"
+    fun setSenderBubbleColor(colorHex: String) {
+        prefs.edit().putString(KEY_SENDER_BUBBLE_COLOR, colorHex).commit()
+        _senderBubbleColorFlow.value = colorHex
+    }
+
+    fun getReceiverBubbleColor(): String = prefs.getString(KEY_RECEIVER_BUBBLE_COLOR, "#161B22") ?: "#161B22"
+    fun setReceiverBubbleColor(colorHex: String) {
+        prefs.edit().putString(KEY_RECEIVER_BUBBLE_COLOR, colorHex).commit()
+        _receiverBubbleColorFlow.value = colorHex
+    }
+
+    fun getChatFontStyle(): String = prefs.getString(KEY_CHAT_FONT_STYLE, "DEVICE") ?: "DEVICE"
+    fun setChatFontStyle(style: String) {
+        prefs.edit().putString(KEY_CHAT_FONT_STYLE, style).commit()
+        _chatFontStyleFlow.value = style
+    }
+
+    fun getChatFontSizeScale(): String = prefs.getString(KEY_CHAT_FONT_SIZE_SCALE, "MEDIUM") ?: "MEDIUM"
+    fun setChatFontSizeScale(scale: String) {
+        prefs.edit().putString(KEY_CHAT_FONT_SIZE_SCALE, scale).commit()
+        _chatFontSizeScaleFlow.value = scale
+    }
+
+    fun getPreferredRefreshRate(): Int = prefs.getInt(KEY_PREFERRED_REFRESH_RATE, 0)
+    fun setPreferredRefreshRate(rate: Int) {
+        prefs.edit().putInt(KEY_PREFERRED_REFRESH_RATE, rate).commit()
+        _preferredRefreshRateFlow.value = rate
     }
 
     /**

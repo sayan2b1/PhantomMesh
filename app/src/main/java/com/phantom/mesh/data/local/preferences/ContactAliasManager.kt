@@ -66,6 +66,23 @@ class ContactAliasManager @Inject constructor(
         _aliasesFlow.value = updated
     }
 
+    fun getAllAliases(): Map<String, String> = _aliasesFlow.value
+
+    fun restoreAliases(aliases: Map<String, String>) {
+        if (aliases.isEmpty()) return
+        val editor = prefs.edit()
+        val updated = _aliasesFlow.value.toMutableMap()
+        for ((userKey, alias) in aliases) {
+            val cleanUser = cleanKey(userKey)
+            if (alias.isNotBlank()) {
+                editor.putString(KEY_PREFIX_ALIAS + cleanUser, alias)
+                updated[cleanUser] = alias
+            }
+        }
+        editor.commit()
+        _aliasesFlow.value = updated
+    }
+
     /**
      * Resolves the display name for a contact.
      * If an alias exists: returns "Custom Name (username)"

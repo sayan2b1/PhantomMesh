@@ -690,6 +690,26 @@ fun ChatItem(
                         color = if (chat.transportType == "mesh") NeonCyan else TextMuted
                     )
                 }
+
+                // Unread messages count badge
+                if (chat.unreadCount > 0) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(com.phantom.mesh.ui.theme.NeonGreen)
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (chat.unreadCount > 99) "99+" else chat.unreadCount.toString(),
+                            color = com.phantom.mesh.ui.theme.DarkBackground,
+                            fontSize = 10.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
             }
         }
     }

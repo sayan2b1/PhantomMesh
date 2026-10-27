@@ -248,6 +248,61 @@ class AuthRepository @Inject constructor(
         return@withContext Result.success("Password changed successfully")
     }
 
+    /**
+     * Changes the current authenticated user's username.
+     * Updates locally, re-syncs mesh identity, and pushes to cloud if online.
+     */
+    suspend fun changeUsername(newUsername: String): Result<String> = withContext(Dispatchers.IO) {
+        val cleanNewUsername = newUsername.trim().lowercase()
+        if (cleanNewUsername.length < 3) {
+            return@withContext Result.failure(Exception("Username must be at least 3 characters"))
+        }
+        if (!cleanNewUsername.matches(Regex("^[a-zA-Z0-9_]+$"))) {
+            return@withContext Result.failure(Exception("Username can only contain letters, numbers, and underscores"))
+        }
+
+        val currentUserId = sessionManager.getUserId()
+            ?: return@withContext Result.failure(Exception("No active user session found"))
+        val currentUsername = sessionManager.getUsername() ?: ""
+
+        if (cleanNewUsername == currentUsername.lowercase()) {
+            return@withContext Result.failure(Exception("New username must be different from current username"))
+        }
+
+        // Check if another local user profile already has this username
+        val existing = userDao.getUserByUsername(cleanNewUsername)
+        if (existing != null && existing.userId != currentUserId) {
+            return@withContext Result.failure(Exception("Username '$cleanNewUsername' is already taken"))
+        }
+
+        // If online, update Cloud / Firebase Auth
+        if (networkStateManager.isInternetAvailable.value) {
+            try {
+                callCloudAuth(currentUsername, "", "change_username", cleanNewUsername)
+            } catch (e: Exception) {
+                android.util.Log.w("AuthRepository", "Cloud username call note: ${e.message}")
+            }
+
+            try {
+                firebaseAuth.currentUser?.let { user ->
+                    val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                        .setDisplayName(cleanNewUsername)
+                        .build()
+                    user.updateProfile(profileUpdates).await()
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("AuthRepository", "Firebase display name update note: ${e.message}")
+            }
+        }
+
+        // Update local database & active session
+        userDao.updateUsername(currentUserId, cleanNewUsername)
+        sessionManager.updateUsername(cleanNewUsername)
+        meshConnectionManager.setLocalIdentity(currentUserId, cleanNewUsername)
+
+        return@withContext Result.success("Username updated to $cleanNewUsername")
+    }
+
     suspend fun logout() = withContext(Dispatchers.IO) {
         firebaseAuth.signOut()
         sessionManager.clearSession()

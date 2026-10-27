@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var chatRepository: ChatRepository
 
+    @Inject
+    lateinit var localChatBackupManager: com.phantom.mesh.data.local.backup.LocalChatBackupManager
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
@@ -90,6 +93,16 @@ class MainActivity : ComponentActivity() {
 
         // Schedule periodic TTL drop zone cleanup
         DropZoneTtlWorker.schedule(applicationContext)
+
+        // Ensure auto-backup is scheduled if configured
+        localChatBackupManager.ensureScheduledFromPreferences()
+
+        // Apply dynamic adaptive display refresh rate (60Hz, 90Hz, 120Hz, Adaptive)
+        CoroutineScope(Dispatchers.Main).launch {
+            sessionManager.preferredRefreshRateFlow.collect { rate ->
+                applyRefreshRate(rate)
+            }
+        }
 
         // ── 24-HOUR SESSION PERSISTENCE RESTORATION ─────────────────────────
         val isSessionValid = sessionManager.isSessionValid()
@@ -213,6 +226,40 @@ class MainActivity : ComponentActivity() {
             ContextCompat.startForegroundService(this, serviceIntent)
         } catch (e: Exception) {
             Log.e("MainActivity", "Failed to start MeshNetworkService: ${e.message}", e)
+        }
+    }
+
+    private fun applyRefreshRate(rate: Int) {
+        try {
+            val params = window.attributes
+            if (rate > 0) {
+                params.preferredRefreshRate = rate.toFloat()
+            } else {
+                // 0f = system default / max adaptive smoothness
+                params.preferredRefreshRate = 0f
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (rate > 0) {
+                    val currentDisplay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        display
+                    } else {
+                        @Suppress("DEPRECATION")
+                        windowManager.defaultDisplay
+                    }
+                    val matchingMode = currentDisplay?.supportedModes?.firstOrNull {
+                        kotlin.math.abs(it.refreshRate - rate) < 2f
+                    }
+                    if (matchingMode != null) {
+                        params.preferredDisplayModeId = matchingMode.modeId
+                    }
+                } else {
+                    params.preferredDisplayModeId = 0
+                }
+            }
+            window.attributes = params
+            Log.i("MainActivity", "Applied display refresh rate: ${if (rate > 0) "$rate Hz" else "Adaptive / Device Max"}")
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Failed to set refresh rate: ${e.message}")
         }
     }
 }

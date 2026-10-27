@@ -12,13 +12,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.phantom.mesh.data.local.backup.BackupFrequency
+import com.phantom.mesh.data.local.backup.BackupMetadata
+import com.phantom.mesh.data.local.backup.LocalChatBackupManager
 import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val duressWipeManager: DuressWipeManager,
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val localChatBackupManager: LocalChatBackupManager
 ) : ViewModel() {
 
     val username: StateFlow<String?> = sessionManager.usernameFlow
@@ -33,6 +37,96 @@ class SettingsViewModel @Inject constructor(
 
     val chatWallpaperPath: StateFlow<String?> = sessionManager.chatWallpaperFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // Local Chat Backup StateFlows
+    val autoBackupFrequency: StateFlow<String> = sessionManager.autoBackupFrequencyFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getAutoBackupFrequency())
+
+    val lastBackupTimestamp: StateFlow<Long> = sessionManager.lastBackupTimestampFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getLastBackupTimestamp())
+
+    val lastBackupSize: StateFlow<Long> = sessionManager.lastBackupSizeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getLastBackupSize())
+
+    val lastBackupMessageCount: StateFlow<Int> = sessionManager.lastBackupMessageCountFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getLastBackupMessageCount())
+
+    private val _isBackupRunning = MutableStateFlow(false)
+    val isBackupRunning: StateFlow<Boolean> = _isBackupRunning.asStateFlow()
+
+    private val _isRestoreRunning = MutableStateFlow(false)
+    val isRestoreRunning: StateFlow<Boolean> = _isRestoreRunning.asStateFlow()
+
+    private val _availableBackups = MutableStateFlow<List<BackupMetadata>>(emptyList())
+    val availableBackups: StateFlow<List<BackupMetadata>> = _availableBackups.asStateFlow()
+
+    // ── Appearance & Personalization Flows ─────────────────────────────
+    val senderBubbleColor: StateFlow<String> = sessionManager.senderBubbleColorFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getSenderBubbleColor())
+
+    val receiverBubbleColor: StateFlow<String> = sessionManager.receiverBubbleColorFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getReceiverBubbleColor())
+
+    val chatFontStyle: StateFlow<String> = sessionManager.chatFontStyleFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getChatFontStyle())
+
+    val chatFontSizeScale: StateFlow<String> = sessionManager.chatFontSizeScaleFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getChatFontSizeScale())
+
+    // ── Privacy & Performance Flows ────────────────────────────────────
+    val readReceiptsEnabled: StateFlow<Boolean> = sessionManager.readReceiptsEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.isReadReceiptsEnabled())
+
+    val preferredRefreshRate: StateFlow<Int> = sessionManager.preferredRefreshRateFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getPreferredRefreshRate())
+
+    init {
+        refreshAvailableBackups()
+    }
+
+    fun refreshAvailableBackups() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _availableBackups.value = localChatBackupManager.listAvailableBackups()
+        }
+    }
+
+    fun setAutoBackupFrequency(frequency: BackupFrequency) {
+        viewModelScope.launch {
+            localChatBackupManager.scheduleAutoBackup(frequency)
+            _statusMessage.value = "Auto-backup frequency set to: ${frequency.title}"
+        }
+    }
+
+    fun performBackupNow() {
+        if (_isBackupRunning.value) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _isBackupRunning.value = true
+            val result = localChatBackupManager.performBackup()
+            _statusMessage.value = result.message
+            _isBackupRunning.value = false
+            refreshAvailableBackups()
+        }
+    }
+
+    fun restoreFromFile(file: java.io.File) {
+        if (_isRestoreRunning.value) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _isRestoreRunning.value = true
+            val result = localChatBackupManager.restoreFromFile(file)
+            _statusMessage.value = result.message
+            _isRestoreRunning.value = false
+        }
+    }
+
+    fun restoreFromUri(uri: android.net.Uri) {
+        if (_isRestoreRunning.value) return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _isRestoreRunning.value = true
+            val result = localChatBackupManager.restoreFromUri(uri)
+            _statusMessage.value = result.message
+            _isRestoreRunning.value = false
+        }
+    }
 
     fun setWallpaperFromUri(context: android.content.Context, uri: android.net.Uri) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -76,6 +170,45 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setReadReceiptsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionManager.setReadReceiptsEnabled(enabled)
+            _statusMessage.value = if (enabled) "Read receipts enabled (blue ticks active)" else "Read receipts disabled (private mode)"
+        }
+    }
+
+    fun setSenderBubbleColor(colorHex: String) {
+        viewModelScope.launch {
+            sessionManager.setSenderBubbleColor(colorHex)
+        }
+    }
+
+    fun setReceiverBubbleColor(colorHex: String) {
+        viewModelScope.launch {
+            sessionManager.setReceiverBubbleColor(colorHex)
+        }
+    }
+
+    fun setChatFontStyle(style: String) {
+        viewModelScope.launch {
+            sessionManager.setChatFontStyle(style)
+        }
+    }
+
+    fun setChatFontSizeScale(scale: String) {
+        viewModelScope.launch {
+            sessionManager.setChatFontSizeScale(scale)
+        }
+    }
+
+    fun setPreferredRefreshRate(rate: Int) {
+        viewModelScope.launch {
+            sessionManager.setPreferredRefreshRate(rate)
+            _statusMessage.value = if (rate > 0) "Refresh rate set to $rate Hz" else "Adaptive refresh rate enabled"
+        }
+    }
+
+
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
@@ -111,6 +244,29 @@ class SettingsViewModel @Inject constructor(
             }.onFailure { e ->
                 _statusMessage.value = e.message ?: "Failed to change password"
             }
+        }
+    }
+
+    private val _isChangingUsername = MutableStateFlow(false)
+    val isChangingUsername: StateFlow<Boolean> = _isChangingUsername.asStateFlow()
+
+    fun changeUsername(newUsername: String) {
+        val clean = newUsername.trim()
+        if (clean.length < 3) {
+            _statusMessage.value = "Username must be at least 3 characters"
+            return
+        }
+        if (_isChangingUsername.value) return
+
+        viewModelScope.launch {
+            _isChangingUsername.value = true
+            val result = authRepository.changeUsername(clean)
+            result.onSuccess { msg ->
+                _statusMessage.value = msg
+            }.onFailure { e ->
+                _statusMessage.value = e.message ?: "Failed to update username"
+            }
+            _isChangingUsername.value = false
         }
     }
 

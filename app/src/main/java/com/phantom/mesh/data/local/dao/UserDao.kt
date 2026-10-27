@@ -32,6 +32,9 @@ interface UserDao {
     @Query("UPDATE users SET password_hash = :hash WHERE user_id = :userId")
     suspend fun updatePasswordHash(userId: String, hash: String)
 
+    @Query("UPDATE users SET username = :newUsername, display_name = :newUsername WHERE user_id = :userId")
+    suspend fun updateUsername(userId: String, newUsername: String)
+
     @Query("UPDATE users SET last_active = :timestamp WHERE user_id = :userId")
     suspend fun updateLastActive(userId: String, timestamp: Long = System.currentTimeMillis())
 

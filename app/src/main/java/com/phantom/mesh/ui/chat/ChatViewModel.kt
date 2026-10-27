@@ -42,6 +42,12 @@ class ChatViewModel @Inject constructor(
     val chatWallpaperPath: StateFlow<String?> = sessionManager.chatWallpaperFlow
     val contactAliases: StateFlow<Map<String, String>> = contactAliasManager.aliasesFlow
 
+    val readReceiptsEnabled: StateFlow<Boolean> = sessionManager.readReceiptsEnabledFlow
+    val senderBubbleColor: StateFlow<String> = sessionManager.senderBubbleColorFlow
+    val receiverBubbleColor: StateFlow<String> = sessionManager.receiverBubbleColorFlow
+    val chatFontStyle: StateFlow<String> = sessionManager.chatFontStyleFlow
+    val chatFontSizeScale: StateFlow<String> = sessionManager.chatFontSizeScaleFlow
+
     fun setTargetAlias(alias: String) {
         contactAliasManager.setAlias(targetId, alias)
     }
@@ -58,10 +64,24 @@ class ChatViewModel @Inject constructor(
         return contactAliasManager.getFormattedDisplayName(targetId)
     }
 
+    private val _unreadMessageIds = MutableStateFlow<Set<String>>(emptySet())
+    val unreadMessageIds: StateFlow<Set<String>> = _unreadMessageIds.asStateFlow()
+
     init {
         com.phantom.mesh.util.NotificationHelper.currentActiveChatId = chatId
         viewModelScope.launch {
-            _currentUserId.value = sessionManager.getUserId()
+            val myId = sessionManager.getUserId() ?: ""
+            _currentUserId.value = myId
+
+            // 1. Capture which messages are unread before marking as read
+            val unreadIds = chatRepository.getUnreadMessageIds(chatId, myId)
+            if (unreadIds.isNotEmpty()) {
+                _unreadMessageIds.value = unreadIds.toSet()
+            }
+
+            // 2. Mark chat as read and dispatch read receipt if enabled
+            val readReceiptsOn = sessionManager.isReadReceiptsEnabled()
+            chatRepository.markChatAsRead(chatId, myId, sendReadReceipt = readReceiptsOn)
         }
     }
 
