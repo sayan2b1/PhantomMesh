@@ -15,6 +15,8 @@ import com.google.gson.Gson
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshPacket
+import com.phantom.mesh.network.LocalNetworkDetector
+import com.phantom.mesh.network.NetworkProfile
 import com.phantom.mesh.network.NetworkStateManager
 import com.phantom.mesh.network.NetworkTransport
 import com.phantom.mesh.util.NotificationHelper
@@ -47,6 +49,12 @@ enum class CallStatus {
     ENDED
 }
 
+enum class CallTransportMode {
+    SAME_WIFI_LAN,   // Direct P2P UDP over local Wi-Fi router (<5ms latency)
+    CLOUD_RELAY,     // Real-time media streaming via Firebase (Cross-network: Wi-Fi to Cellular)
+    BLUETOOTH_MESH   // Offline Nearby Connections mesh P2P
+}
+
 data class ActiveCall(
     val callId: String = UUID.randomUUID().toString(),
     val peerUsername: String,
@@ -60,7 +68,8 @@ data class ActiveCall(
     val isSpeakerOn: Boolean = false,
     val isVideoEnabled: Boolean = true,
     val isFrontCamera: Boolean = true,
-    val remoteVideoBitmap: Bitmap? = null
+    val remoteVideoBitmap: Bitmap? = null,
+    val transportMode: CallTransportMode = CallTransportMode.CLOUD_RELAY
 )
 
 sealed class CallInitiationResult {
@@ -93,16 +102,21 @@ class CallManager @Inject constructor(
     private val _currentCall = MutableStateFlow<ActiveCall?>(null)
     val currentCall: StateFlow<ActiveCall?> = _currentCall.asStateFlow()
 
-    private var activeCallTransport: String = "mesh"
+    private var myNetworkProfile: NetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
+    private var peerNetworkProfile: NetworkProfile? = null
+    private var lanVoipEngine: LanVoipEngine? = null
+
     private var durationTimerJob: Job? = null
     private var audioVoipEngine: AudioVoipEngine? = null
 
     private val incomingCallListeners = mutableListOf<ListenerRegistration>()
     private var activeCallDocListener: ListenerRegistration? = null
-    private var remoteAudioListener: ListenerRegistration? = null
-    private var remoteVideoListener: ListenerRegistration? = null
-    private var audioSeq = 0
-    private var videoSeq = 0
+    private var cloudStreamListener: ListenerRegistration? = null
+
+    private var isCloudWriteInFlight = false
+    private var pendingAudioB64: String? = null
+    private var pendingVideoB64: String? = null
+    private var streamSeq = 0
 
     init {
         // 1. Listen for incoming calling packets on the Mesh (Bluetooth / Wi-Fi Direct)
@@ -167,15 +181,22 @@ class CallManager @Inject constructor(
                             val timestamp = doc.getLong("timestamp") ?: 0L
                             val ageMs = Math.abs(System.currentTimeMillis() - timestamp)
 
+                            val callerNetMap = doc.get("callerNet") as? Map<*, *>
+                            val peerNet = NetworkProfile.fromMap(callerNetMap)
+
                             // Accept calls initiated within 2 minutes (tolerates clock skew)
                             if (ageMs < 120_000L || timestamp == 0L) {
                                 if (_currentCall.value == null || _currentCall.value?.status == CallStatus.ENDED) {
-                                    receiveIncomingCall(callerUsername, callerId, callId, callType, "cloud")
+                                    receiveIncomingCall(callerUsername, callerId, callId, callType, "cloud", peerNet)
                                 }
                             }
                         } else if (docChange.type == DocumentChange.Type.REMOVED) {
-                            if (_currentCall.value?.callId == callId && _currentCall.value?.status == CallStatus.INCOMING_RINGING) {
-                                onCallEndedRemote("Caller Cancelled")
+                            val current = _currentCall.value
+                            if (current != null && current.callId == callId && current.status == CallStatus.INCOMING_RINGING) {
+                                val docStatus = docChange.document.getString("status")
+                                if (docStatus == "cancelled" || docStatus == "ended" || docStatus == "rejected") {
+                                    onCallEndedRemote("Caller Cancelled")
+                                }
                             }
                         }
                     }
@@ -204,6 +225,10 @@ class CallManager @Inject constructor(
 
                     when (status) {
                         "accepted" -> {
+                            val calleeNetMap = snapshot.get("calleeNet") as? Map<*, *>
+                            if (calleeNetMap != null) {
+                                peerNetworkProfile = NetworkProfile.fromMap(calleeNetMap)
+                            }
                             if (current.status == CallStatus.OUTGOING_CALLING) {
                                 connectCall()
                             }
@@ -271,7 +296,11 @@ class CallManager @Inject constructor(
             .trim()
             .ifBlank { cleanTargetAddress }
 
+        myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
+
         val callId = UUID.randomUUID().toString()
+        val initialMode = if (networkStateManager.isInternetAvailable.value) CallTransportMode.CLOUD_RELAY else CallTransportMode.BLUETOOTH_MESH
+
         val call = ActiveCall(
             callId = callId,
             peerUsername = cleanDisplayName,
@@ -280,11 +309,11 @@ class CallManager @Inject constructor(
             status = CallStatus.OUTGOING_CALLING,
             isIncoming = false,
             isVideoEnabled = callType == CallType.VIDEO,
-            isSpeakerOn = callType == CallType.VIDEO
+            isSpeakerOn = callType == CallType.VIDEO,
+            transportMode = initialMode
         )
 
         _currentCall.value = call
-        activeCallTransport = if (networkStateManager.isInternetAvailable.value) "cloud" else "mesh"
         SoundEffectManager.startOutgoingRingtone()
 
         audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -303,6 +332,7 @@ class CallManager @Inject constructor(
                 "targetRaw" to cleanTargetRaw,
                 "callType" to callType.name,
                 "status" to "ringing",
+                "callerNet" to myNetworkProfile.toMap(),
                 "timestamp" to System.currentTimeMillis()
             )
 
@@ -321,7 +351,8 @@ class CallManager @Inject constructor(
                 data = gson.toJson(mapOf(
                     "callId" to callId,
                     "callerUsername" to myUsername,
-                    "callType" to callType.name
+                    "callType" to callType.name,
+                    "callerNet" to myNetworkProfile.toMap()
                 )),
                 dataType = "call_offer"
             )
@@ -349,11 +380,24 @@ class CallManager @Inject constructor(
         peerAddress: String,
         callId: String,
         callType: CallType,
-        transport: String = "mesh"
+        transport: String = "mesh",
+        peerNet: NetworkProfile? = null
     ) {
         if (_currentCall.value != null && _currentCall.value?.status != CallStatus.ENDED) {
             Log.w(TAG, "Already in a call, ignoring incoming: $callId")
             return
+        }
+
+        myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
+        peerNetworkProfile = peerNet
+
+        val isSameWifi = peerNet != null && LocalNetworkDetector.isSameWifiNetwork(myNetworkProfile, peerNet)
+        val mode = if (isSameWifi) {
+            CallTransportMode.SAME_WIFI_LAN
+        } else if (networkStateManager.isInternetAvailable.value) {
+            CallTransportMode.CLOUD_RELAY
+        } else {
+            CallTransportMode.BLUETOOTH_MESH
         }
 
         val call = ActiveCall(
@@ -364,11 +408,11 @@ class CallManager @Inject constructor(
             status = CallStatus.INCOMING_RINGING,
             isIncoming = true,
             isVideoEnabled = callType == CallType.VIDEO,
-            isSpeakerOn = callType == CallType.VIDEO
+            isSpeakerOn = callType == CallType.VIDEO,
+            transportMode = mode
         )
 
         _currentCall.value = call
-        activeCallTransport = transport
         SoundEffectManager.startIncomingRingtone()
 
         notificationHelperProvider.get().showIncomingCallNotification(
@@ -389,21 +433,38 @@ class CallManager @Inject constructor(
             notificationHelperProvider.get().cancelIncomingCallNotification()
             SoundEffectManager.stopRingtone()
 
-            // Update Cloud status to accepted
+            // Immediately transition local call status to CONNECTED so it cannot be falsely cancelled
+            val now = System.currentTimeMillis()
+            _currentCall.value = call.copy(
+                status = CallStatus.CONNECTED,
+                startTimeMs = now,
+                durationSeconds = 0L
+            )
+
+            myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
+
+            // Update Cloud status to accepted with callee network profile
             try {
                 FirebaseFirestore.getInstance().collection("calls").document(call.callId)
-                    .set(mapOf("status" to "accepted"), SetOptions.merge())
+                    .set(mapOf(
+                        "status" to "accepted",
+                        "calleeNet" to myNetworkProfile.toMap()
+                    ), SetOptions.merge())
             } catch (e: Exception) {
                 Log.w(TAG, "Cloud update to accepted failed: ${e.message}")
             }
 
-            // Signal acceptance over Mesh
+            // Signal acceptance over Mesh with callee network profile
             try {
+                val answerData = mapOf(
+                    "callId" to call.callId,
+                    "calleeNet" to myNetworkProfile.toMap()
+                )
                 val answerPacket = MeshPacket(
                     packetId = UUID.randomUUID().toString(),
                     senderId = sessionManager.getUserId() ?: "local",
                     targetId = call.peerAddress,
-                    data = call.callId,
+                    data = gson.toJson(answerData),
                     dataType = "call_answer"
                 )
                 meshConnectionManagerProvider.get().sendPacket(answerPacket)
@@ -419,11 +480,25 @@ class CallManager @Inject constructor(
         SoundEffectManager.stopRingtone()
         notificationHelperProvider.get().cancelIncomingCallNotification()
 
+        myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
+        val peerNet = peerNetworkProfile
+        val isSameWifi = peerNet != null && LocalNetworkDetector.isSameWifiNetwork(myNetworkProfile, peerNet)
+        val mode = if (isSameWifi) {
+            CallTransportMode.SAME_WIFI_LAN
+        } else if (networkStateManager.isInternetAvailable.value) {
+            CallTransportMode.CLOUD_RELAY
+        } else {
+            CallTransportMode.BLUETOOTH_MESH
+        }
+
+        Log.i(TAG, "Connecting call $mode. isSameWifi=$isSameWifi, myNet=$myNetworkProfile, peerNet=$peerNet")
+
         val now = System.currentTimeMillis()
         _currentCall.value = _currentCall.value?.copy(
             status = CallStatus.CONNECTED,
             startTimeMs = now,
-            durationSeconds = 0L
+            durationSeconds = 0L,
+            transportMode = mode
         )
 
         // Start call duration ticker
@@ -437,92 +512,78 @@ class CallManager @Inject constructor(
             }
         }
 
-        // Start full-duplex VoIP audio capture & playback across Cloud & Mesh
-        val current = _currentCall.value ?: return
-        startAudioStream(current)
+        // Mode 1: SAME_WIFI_LAN direct P2P UDP engine (<5ms, zero data)
+        if (mode == CallTransportMode.SAME_WIFI_LAN && peerNet != null && peerNet.localIp.isNotBlank()) {
+            lanVoipEngine?.stop()
+            lanVoipEngine = LanVoipEngine(
+                onAudioReceived = { pcm ->
+                    audioVoipEngine?.playRemoteAudio(pcm)
+                },
+                onVideoReceived = { bmp ->
+                    if (_currentCall.value?.status == CallStatus.CONNECTED) {
+                        _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                    }
+                }
+            )
+            lanVoipEngine?.start(peerIp = peerNet.localIp)
+        }
 
-        // If video call, start Camera2 video streaming engine
+        // Mode 2: CLOUD_RELAY via Firebase Firestore (Cross-network: Wi-Fi to Mobile Data & LAN fallback)
+        if (mode == CallTransportMode.CLOUD_RELAY || networkStateManager.isInternetAvailable.value) {
+            val current = _currentCall.value ?: return
+            startCloudMediaListener(current)
+        }
+
+        val current = _currentCall.value ?: return
+        startAudioStream(current, mode)
+
         if (current.callType == CallType.VIDEO && current.isVideoEnabled) {
-            startVideoStream(current)
+            startVideoStream(current, mode)
         }
     }
 
-    private fun startAudioStream(call: ActiveCall) {
+    private fun startAudioStream(call: ActiveCall, mode: CallTransportMode) {
         audioVoipEngine?.stop()
-        audioSeq = 0
         val myRole = if (call.isIncoming) "callee" else "caller"
-        val peerRole = if (call.isIncoming) "caller" else "callee"
-        val firestore = FirebaseFirestore.getInstance()
 
         audioVoipEngine = AudioVoipEngine(context) { pcmChunk ->
             val active = _currentCall.value
             if (active?.status == CallStatus.CONNECTED && !active.isMuted) {
-                val b64 = Base64.encodeToString(pcmChunk, Base64.NO_WRAP)
-                val seq = audioSeq++
+                // 1. LAN Direct P2P (<5ms latency)
+                if (mode == CallTransportMode.SAME_WIFI_LAN) {
+                    lanVoipEngine?.sendAudio(pcmChunk)
+                }
 
-                // 1. Cloud Firestore rotating chunk documents (chunk_0, chunk_1, chunk_2)
-                try {
-                    val slot = seq % 3
-                    val chunkData = hashMapOf(
-                        "seq" to seq,
-                        "data" to b64,
-                        "ts" to System.currentTimeMillis()
-                    )
-                    firestore.collection("calls").document(call.callId)
-                        .collection("audio_$myRole").document("chunk_$slot")
-                        .set(chunkData)
-                } catch (_: Exception) {}
+                // 2. Cloud Relay (G.711 mu-law compressed, zero-backlog single-flight)
+                if (mode == CallTransportMode.CLOUD_RELAY || (mode == CallTransportMode.SAME_WIFI_LAN && networkStateManager.isInternetAvailable.value)) {
+                    val muLaw = AudioVoipEngine.G711.linearToMuLaw(pcmChunk)
+                    val b64 = Base64.encodeToString(muLaw, Base64.NO_WRAP)
+                    sendCloudMedia(call.callId, myRole, audio = b64, video = null)
+                }
 
-                // 2. Mesh Nearby Connections packet
-                try {
-                    val packet = MeshPacket(
-                        packetId = UUID.randomUUID().toString(),
-                        senderId = sessionManager.getUserId() ?: "local",
-                        targetId = call.peerAddress,
-                        data = b64,
-                        dataType = "call_audio"
-                    )
-                    meshConnectionManagerProvider.get().sendPacket(packet)
-                } catch (_: Exception) {}
+                // 3. Bluetooth Mesh P2P
+                if (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers()) {
+                    try {
+                        val b64 = Base64.encodeToString(pcmChunk, Base64.NO_WRAP)
+                        val packet = MeshPacket(
+                            packetId = UUID.randomUUID().toString(),
+                            senderId = sessionManager.getUserId() ?: "local",
+                            targetId = call.peerAddress,
+                            data = b64,
+                            dataType = "call_audio"
+                        )
+                        meshConnectionManagerProvider.get().sendPacket(packet)
+                    } catch (_: Exception) {}
+                }
             }
         }
         audioVoipEngine?.setMuted(call.isMuted)
         audioVoipEngine?.setSpeakerOn(call.isSpeakerOn)
         audioVoipEngine?.start()
-
-        // Remote Cloud Audio Listener
-        remoteAudioListener?.remove()
-        try {
-            var lastAudioSeq = -1
-            remoteAudioListener = firestore.collection("calls").document(call.callId)
-                .collection("audio_$peerRole")
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null) return@addSnapshotListener
-                    if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
-                    for (doc in snapshot.documents) {
-                        val seq = (doc.getLong("seq") ?: -1L).toInt()
-                        val b64 = doc.getString("data") ?: continue
-                        val ts = doc.getLong("ts") ?: 0L
-                        if (Math.abs(System.currentTimeMillis() - ts) > 2500) continue
-                        if (seq > lastAudioSeq || (lastAudioSeq - seq > 1000)) {
-                            lastAudioSeq = seq
-                            try {
-                                val pcm = Base64.decode(b64, Base64.DEFAULT)
-                                audioVoipEngine?.playRemoteAudio(pcm)
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to listen for remote audio: ${e.message}")
-        }
     }
 
-    private fun startVideoStream(call: ActiveCall) {
-        videoSeq = 0
+    private fun startVideoStream(call: ActiveCall, mode: CallTransportMode) {
         val myRole = if (call.isIncoming) "callee" else "caller"
-        val peerRole = if (call.isIncoming) "caller" else "callee"
-        val firestore = FirebaseFirestore.getInstance()
 
         CameraVideoEngine.start(
             context = context,
@@ -531,64 +592,126 @@ class CallManager @Inject constructor(
         ) { jpegBytes ->
             val active = _currentCall.value
             if (active?.status == CallStatus.CONNECTED && active.isVideoEnabled) {
-                val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
-                val seq = videoSeq++
+                // 1. LAN Direct P2P (<5ms latency, MTU-safe chunks)
+                if (mode == CallTransportMode.SAME_WIFI_LAN) {
+                    lanVoipEngine?.sendVideo(jpegBytes)
+                }
 
-                // 1. Cloud Firestore rotating frame documents (frame_0, frame_1)
-                try {
-                    val slot = seq % 2
-                    val frameData = hashMapOf(
-                        "seq" to seq,
-                        "data" to b64,
-                        "ts" to System.currentTimeMillis()
-                    )
-                    firestore.collection("calls").document(call.callId)
-                        .collection("video_$myRole").document("frame_$slot")
-                        .set(frameData)
-                } catch (_: Exception) {}
+                // 2. Cloud Relay (Real-time Firebase Stream with zero queue buildup)
+                if (mode == CallTransportMode.CLOUD_RELAY || (mode == CallTransportMode.SAME_WIFI_LAN && networkStateManager.isInternetAvailable.value)) {
+                    val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+                    sendCloudMedia(call.callId, myRole, audio = null, video = b64)
+                }
 
-                // 2. Mesh Nearby Connections packet
-                try {
-                    val packet = MeshPacket(
-                        packetId = UUID.randomUUID().toString(),
-                        senderId = sessionManager.getUserId() ?: "local",
-                        targetId = call.peerAddress,
-                        data = b64,
-                        dataType = "call_video"
-                    )
-                    meshConnectionManagerProvider.get().sendPacket(packet)
-                } catch (_: Exception) {}
+                // 3. Bluetooth Mesh P2P
+                if (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers()) {
+                    try {
+                        val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+                        val packet = MeshPacket(
+                            packetId = UUID.randomUUID().toString(),
+                            senderId = sessionManager.getUserId() ?: "local",
+                            targetId = call.peerAddress,
+                            data = b64,
+                            dataType = "call_video"
+                        )
+                        meshConnectionManagerProvider.get().sendPacket(packet)
+                    } catch (_: Exception) {}
+                }
             }
         }
+    }
 
-        // Remote Cloud Video Listener
-        remoteVideoListener?.remove()
+    @Synchronized
+    private fun sendCloudMedia(callId: String, role: String, audio: String?, video: String?) {
+        if (audio != null) pendingAudioB64 = audio
+        if (video != null) pendingVideoB64 = video
+        flushPendingCloudMedia(callId, role)
+    }
+
+    @Synchronized
+    private fun flushPendingCloudMedia(callId: String, role: String) {
+        if (isCloudWriteInFlight) return
+        val audioToSend = pendingAudioB64
+        val videoToSend = pendingVideoB64
+        if (audioToSend == null && videoToSend == null) return
+
+        pendingAudioB64 = null
+        pendingVideoB64 = null
+        isCloudWriteInFlight = true
+
+        val now = System.currentTimeMillis()
+        val data = hashMapOf<String, Any>(
+            "seq" to streamSeq++,
+            "ts" to now
+        )
+        if (audioToSend != null) data["audio"] = audioToSend
+        if (videoToSend != null) data["video"] = videoToSend
+
         try {
-            var lastVideoSeq = -1
-            remoteVideoListener = firestore.collection("calls").document(call.callId)
-                .collection("video_$peerRole")
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null || snapshot == null) return@addSnapshotListener
-                    if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
-                    for (doc in snapshot.documents) {
-                        val seq = (doc.getLong("seq") ?: -1L).toInt()
-                        val b64 = doc.getString("data") ?: continue
-                        val ts = doc.getLong("ts") ?: 0L
-                        if (Math.abs(System.currentTimeMillis() - ts) > 3000) continue
-                        if (seq > lastVideoSeq || (lastVideoSeq - seq > 1000)) {
-                            lastVideoSeq = seq
-                            try {
-                                val rawBytes = Base64.decode(b64, Base64.DEFAULT)
-                                val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
-                                if (bmp != null) {
-                                    _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
-                                }
-                            } catch (_: Exception) {}
+            FirebaseFirestore.getInstance().collection("calls").document(callId)
+                .collection("stream").document(role)
+                .set(data)
+                .addOnCompleteListener {
+                    synchronized(this@CallManager) {
+                        isCloudWriteInFlight = false
+                        // If fresh audio or video arrived while previous mutation was uploading, flush immediately
+                        if (pendingAudioB64 != null || pendingVideoB64 != null) {
+                            flushPendingCloudMedia(callId, role)
                         }
                     }
                 }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to listen for remote video: ${e.message}")
+            synchronized(this@CallManager) {
+                isCloudWriteInFlight = false
+            }
+            Log.d(TAG, "Cloud media write error: ${e.message}")
+        }
+    }
+
+    private fun startCloudMediaListener(call: ActiveCall) {
+        cloudStreamListener?.remove()
+        val peerRole = if (call.isIncoming) "caller" else "callee"
+        val firestore = FirebaseFirestore.getInstance()
+        var lastReceivedSeq = -1L
+
+        try {
+            cloudStreamListener = firestore.collection("calls").document(call.callId)
+                .collection("stream").document(peerRole)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
+
+                    val seq = snapshot.getLong("seq") ?: -1L
+                    if (seq > lastReceivedSeq || (lastReceivedSeq - seq > 2000)) {
+                        lastReceivedSeq = seq
+
+                        val audioB64 = snapshot.getString("audio")
+                        if (!audioB64.isNullOrBlank()) {
+                            try {
+                                val muLaw = Base64.decode(audioB64, Base64.DEFAULT)
+                                val pcm = AudioVoipEngine.G711.muLawToLinear(muLaw)
+                                audioVoipEngine?.playRemoteAudio(pcm)
+                            } catch (e: Exception) {
+                                Log.d(TAG, "Error playing cloud audio: ${e.message}")
+                            }
+                        }
+
+                        val videoB64 = snapshot.getString("video")
+                        if (!videoB64.isNullOrBlank()) {
+                            try {
+                                val jpegBytes = Base64.decode(videoB64, Base64.DEFAULT)
+                                val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                                if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
+                                    _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                                }
+                            } catch (e: Exception) {
+                                Log.d(TAG, "Error decoding cloud video: ${e.message}")
+                            }
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to attach cloud stream listener: ${e.message}")
         }
     }
 
@@ -601,21 +724,36 @@ class CallManager @Inject constructor(
                     val callerUsername = map["callerUsername"] as? String ?: packet.senderId
                     val callTypeStr = map["callType"] as? String ?: "VOICE"
                     val callType = if (callTypeStr == "VIDEO") CallType.VIDEO else CallType.VOICE
+                    val callerNetMap = map["callerNet"] as? Map<*, *>
+                    val peerNet = NetworkProfile.fromMap(callerNetMap)
 
                     receiveIncomingCall(
                         peerUsername = callerUsername,
                         peerAddress = packet.senderId,
                         callId = callId,
                         callType = callType,
-                        transport = "mesh"
+                        transport = "mesh",
+                        peerNet = peerNet
                     )
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed parsing call_offer packet: ${e.message}")
                 }
             }
             "call_answer" -> {
-                if (_currentCall.value?.callId == packet.data && _currentCall.value?.status == CallStatus.OUTGOING_CALLING) {
-                    connectCall()
+                try {
+                    val map = gson.fromJson(packet.data, Map::class.java)
+                    val incomingCallId = map["callId"] as? String ?: packet.data
+                    val calleeNetMap = map["calleeNet"] as? Map<*, *>
+                    if (calleeNetMap != null) {
+                        peerNetworkProfile = NetworkProfile.fromMap(calleeNetMap)
+                    }
+                    if (_currentCall.value?.callId == incomingCallId && _currentCall.value?.status == CallStatus.OUTGOING_CALLING) {
+                        connectCall()
+                    }
+                } catch (_: Exception) {
+                    if (_currentCall.value?.callId == packet.data && _currentCall.value?.status == CallStatus.OUTGOING_CALLING) {
+                        connectCall()
+                    }
                 }
             }
             "call_reject", "call_end" -> {
@@ -647,7 +785,7 @@ class CallManager @Inject constructor(
                     try {
                         val rawBytes = Base64.decode(packet.data, Base64.DEFAULT)
                         val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
-                        if (bmp != null) {
+                        if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
                             _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
                         }
                     } catch (e: Exception) {
@@ -691,7 +829,7 @@ class CallManager @Inject constructor(
             if (!nextEnabled) {
                 CameraVideoEngine.stop()
             } else {
-                startVideoStream(current)
+                startVideoStream(current, current.transportMode)
             }
             current.copy(isVideoEnabled = nextEnabled)
         }
@@ -720,21 +858,38 @@ class CallManager @Inject constructor(
         SoundEffectManager.playCallEndSound()
         notificationHelperProvider.get().cancelIncomingCallNotification()
 
-        audioVoipEngine?.stop()
+        try {
+            audioVoipEngine?.stop()
+        } catch (_: Exception) {}
         audioVoipEngine = null
 
-        CameraVideoEngine.stop()
+        try {
+            CameraVideoEngine.stop()
+        } catch (_: Exception) {}
 
-        remoteAudioListener?.remove()
-        remoteAudioListener = null
-        remoteVideoListener?.remove()
-        remoteVideoListener = null
+        try {
+            lanVoipEngine?.stop()
+        } catch (_: Exception) {}
+        lanVoipEngine = null
 
-        audioManager?.mode = AudioManager.MODE_NORMAL
-        audioManager?.isMicrophoneMute = false
-        audioManager?.isSpeakerphoneOn = false
+        try {
+            cloudStreamListener?.remove()
+        } catch (_: Exception) {}
+        cloudStreamListener = null
 
-        activeCallDocListener?.remove()
+        isCloudWriteInFlight = false
+        pendingAudioB64 = null
+        pendingVideoB64 = null
+
+        try {
+            audioManager?.mode = AudioManager.MODE_NORMAL
+            audioManager?.isMicrophoneMute = false
+            audioManager?.isSpeakerphoneOn = false
+        } catch (_: Exception) {}
+
+        try {
+            activeCallDocListener?.remove()
+        } catch (_: Exception) {}
         activeCallDocListener = null
 
         if (call != null && notifyRemote) {
@@ -780,21 +935,38 @@ class CallManager @Inject constructor(
         SoundEffectManager.playCallEndSound()
         notificationHelperProvider.get().cancelIncomingCallNotification()
 
-        audioVoipEngine?.stop()
+        try {
+            audioVoipEngine?.stop()
+        } catch (_: Exception) {}
         audioVoipEngine = null
 
-        CameraVideoEngine.stop()
+        try {
+            CameraVideoEngine.stop()
+        } catch (_: Exception) {}
 
-        remoteAudioListener?.remove()
-        remoteAudioListener = null
-        remoteVideoListener?.remove()
-        remoteVideoListener = null
+        try {
+            lanVoipEngine?.stop()
+        } catch (_: Exception) {}
+        lanVoipEngine = null
 
-        audioManager?.mode = AudioManager.MODE_NORMAL
-        audioManager?.isMicrophoneMute = false
-        audioManager?.isSpeakerphoneOn = false
+        try {
+            cloudStreamListener?.remove()
+        } catch (_: Exception) {}
+        cloudStreamListener = null
 
-        activeCallDocListener?.remove()
+        isCloudWriteInFlight = false
+        pendingAudioB64 = null
+        pendingVideoB64 = null
+
+        try {
+            audioManager?.mode = AudioManager.MODE_NORMAL
+            audioManager?.isMicrophoneMute = false
+            audioManager?.isSpeakerphoneOn = false
+        } catch (_: Exception) {}
+
+        try {
+            activeCallDocListener?.remove()
+        } catch (_: Exception) {}
         activeCallDocListener = null
 
         _currentCall.value = _currentCall.value?.copy(status = CallStatus.ENDED, remoteVideoBitmap = null)
