@@ -45,8 +45,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,7 +67,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import org.webrtc.EglBase
+import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoTrack
 import com.phantom.mesh.calling.webrtc.WebRtcClient
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
@@ -133,45 +139,11 @@ fun CallOverlayScreen(
                     ) {
                         // Remote Video Stream Container (Live WebRTC SurfaceViewRenderer or Legacy Frames)
                         if (webRtcClient != null) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    SurfaceViewRenderer(ctx).apply {
-                                        webRtcClient.attachRemoteRenderer(this)
-                                    }
-                                },
-                                onRelease = { renderer ->
-                                    webRtcClient.detachRemoteRenderer(renderer)
-                                },
+                            WebRtcCallVideoContainer(
+                                call = call,
+                                webRtcClient = webRtcClient,
                                 modifier = Modifier.fillMaxSize()
                             )
-
-                            // Cybernetic stream badge
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(16.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(DarkBackground.copy(alpha = 0.75f))
-                                    .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(NeonGreen)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "⚡ WEBRTC DIRECT (FREE P2P UDP)",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = NeonGreen,
-                                        fontSize = 9.sp,
-                                        fontFamily = FontFamily.Monospace
-                                    )
-                                }
-                            }
                         } else {
                             val remoteBmp = call.remoteVideoBitmap
                             var imageBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
@@ -262,15 +234,9 @@ fun CallOverlayScreen(
                         ) {
                             if (call.isVideoEnabled) {
                                 if (webRtcClient != null) {
-                                    AndroidView(
-                                        factory = { ctx ->
-                                            SurfaceViewRenderer(ctx).apply {
-                                                webRtcClient.attachLocalRenderer(this)
-                                            }
-                                        },
-                                        onRelease = { renderer ->
-                                            webRtcClient.detachLocalRenderer(renderer)
-                                        },
+                                    WebRtcLocalPip(
+                                        call = call,
+                                        webRtcClient = webRtcClient,
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 } else {
@@ -623,4 +589,155 @@ fun CallOverlayScreen(
             }
         }
     }
+}
+
+@Composable
+fun WebRtcSurfaceViewRenderer(
+    videoTrack: VideoTrack?,
+    eglBaseContext: EglBase.Context,
+    isOverlay: Boolean = false,
+    isMirror: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val renderer = remember {
+        SurfaceViewRenderer(context).apply {
+            setEnableHardwareScaler(true)
+            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+            if (isOverlay) {
+                setZOrderMediaOverlay(true)
+            }
+            setMirror(isMirror)
+            try {
+                init(eglBaseContext, null)
+            } catch (_: Exception) {}
+        }
+    }
+
+    LaunchedEffect(isMirror) {
+        try {
+            renderer.setMirror(isMirror)
+        } catch (_: Exception) {}
+    }
+
+    DisposableEffect(videoTrack, renderer) {
+        try {
+            videoTrack?.addSink(renderer)
+        } catch (_: Exception) {}
+        onDispose {
+            try {
+                videoTrack?.removeSink(renderer)
+            } catch (_: Exception) {}
+        }
+    }
+
+    DisposableEffect(renderer) {
+        onDispose {
+            try {
+                renderer.clearImage()
+                renderer.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    AndroidView(
+        factory = { renderer },
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun WebRtcCallVideoContainer(
+    call: ActiveCall,
+    webRtcClient: WebRtcClient,
+    modifier: Modifier = Modifier
+) {
+    val remoteVideoTrack by webRtcClient.remoteVideoTrackFlow.collectAsState()
+
+    Box(modifier = modifier) {
+        WebRtcSurfaceViewRenderer(
+            videoTrack = remoteVideoTrack,
+            eglBaseContext = webRtcClient.eglBase.eglBaseContext,
+            isOverlay = false,
+            isMirror = false,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        if (remoteVideoTrack == null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = null,
+                    tint = NeonCyan.copy(alpha = 0.5f),
+                    modifier = Modifier.size(96.dp)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NeonCyan.copy(alpha = 0.7f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    letterSpacing = 1.sp
+                )
+                Text(
+                    text = "Connecting Cloud & Mesh Video Engine",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                    fontSize = 9.sp
+                )
+            }
+        }
+
+        // Cybernetic stream badge
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(16.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(DarkBackground.copy(alpha = 0.75f))
+                .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(NeonGreen)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "⚡ WEBRTC DIRECT (FREE P2P UDP)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NeonGreen,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WebRtcLocalPip(
+    call: ActiveCall,
+    webRtcClient: WebRtcClient,
+    modifier: Modifier = Modifier
+) {
+    val localVideoTrack by webRtcClient.localVideoTrackFlow.collectAsState()
+
+    WebRtcSurfaceViewRenderer(
+        videoTrack = localVideoTrack,
+        eglBaseContext = webRtcClient.eglBase.eglBaseContext,
+        isOverlay = true,
+        isMirror = call.isFrontCamera,
+        modifier = modifier
+    )
 }

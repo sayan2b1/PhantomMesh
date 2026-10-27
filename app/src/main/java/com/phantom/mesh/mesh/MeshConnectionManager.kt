@@ -592,7 +592,7 @@ class MeshConnectionManager @Inject constructor(
                                  (myCleanUserId != null && targetTokens.contains(myCleanUserId)) ||
                                  (localDisplayNameOnly.isNotBlank() && targetTokens.contains(localDisplayNameOnly))
 
-        val isDirectCallPacket = packet.dataType.startsWith("call_") && (
+        val isDirectCallPacket = (packet.dataType.startsWith("call_") || packet.dataType.startsWith("webrtc_")) && (
             fromEndpointId in routingTable.getAllConnectedEndpoints() ||
             routingTable.getNode(fromEndpointId) != null
         )
@@ -731,7 +731,7 @@ class MeshConnectionManager @Inject constructor(
                 for (endpointId in allEndpoints) {
                     sendToEndpoint(endpointId, packet)
                 }
-            } else if (!packet.dataType.startsWith("call_")) {
+            } else if (!packet.dataType.startsWith("call_") && !packet.dataType.startsWith("webrtc_")) {
                 // No peers connected right now: Enqueue non-call packet so it will be sent when connection links up!
                 scope.launch {
                     enqueueMediaPacket(packet)

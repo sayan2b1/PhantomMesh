@@ -712,7 +712,7 @@ class ChatRepository @Inject constructor(
     // ── Incoming Packet Handlers ───────────────────────────────────────────
 
     private suspend fun handleIncomingMeshPacket(packet: MeshPacket) {
-        if (packet.dataType.startsWith("call_")) {
+        if (packet.dataType.startsWith("call_") || packet.dataType.startsWith("webrtc_")) {
             return
         }
 

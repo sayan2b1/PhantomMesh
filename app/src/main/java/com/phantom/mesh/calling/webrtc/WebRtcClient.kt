@@ -26,6 +26,9 @@ import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -81,12 +84,19 @@ class WebRtcClient(
     var remoteVideoTrack: VideoTrack? = null
         private set
 
+    private val _localVideoTrackFlow = MutableStateFlow<VideoTrack?>(null)
+    val localVideoTrackFlow: StateFlow<VideoTrack?> = _localVideoTrackFlow.asStateFlow()
+
+    private val _remoteVideoTrackFlow = MutableStateFlow<VideoTrack?>(null)
+    val remoteVideoTrackFlow: StateFlow<VideoTrack?> = _remoteVideoTrackFlow.asStateFlow()
+
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var videoCapturer: CameraVideoCapturer? = null
 
     private val isClosed = AtomicBoolean(false)
     private val isRemoteDescriptionSet = AtomicBoolean(false)
     private val pendingCandidates = CopyOnWriteArrayList<IceCandidate>()
+    private val processedCandidates = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private val localRenderers = CopyOnWriteArrayList<SurfaceViewRenderer>()
     private val remoteRenderers = CopyOnWriteArrayList<SurfaceViewRenderer>()
@@ -94,13 +104,22 @@ class WebRtcClient(
     private var isVideoCall = false
     private var isFrontCamera = true
 
-    fun attachLocalRenderer(renderer: SurfaceViewRenderer) {
+    fun attachLocalRenderer(renderer: SurfaceViewRenderer, isOverlay: Boolean = true) {
         try {
-            renderer.init(eglBase.eglBaseContext, null)
+            if (isOverlay) {
+                renderer.setZOrderMediaOverlay(true)
+            }
+            try {
+                renderer.init(eglBase.eglBaseContext, null)
+            } catch (e: Exception) {
+                Log.d(TAG, "Local renderer already initialized: ${e.message}")
+            }
             renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
             renderer.setEnableHardwareScaler(true)
             renderer.setMirror(isFrontCamera)
-            localRenderers.add(renderer)
+            if (!localRenderers.contains(renderer)) {
+                localRenderers.add(renderer)
+            }
             localVideoTrack?.addSink(renderer)
         } catch (e: Exception) {
             Log.w(TAG, "attachLocalRenderer error: ${e.message}")
@@ -111,16 +130,23 @@ class WebRtcClient(
         try {
             localRenderers.remove(renderer)
             localVideoTrack?.removeSink(renderer)
+            renderer.clearImage()
             renderer.release()
         } catch (_: Exception) {}
     }
 
     fun attachRemoteRenderer(renderer: SurfaceViewRenderer) {
         try {
-            renderer.init(eglBase.eglBaseContext, null)
+            try {
+                renderer.init(eglBase.eglBaseContext, null)
+            } catch (e: Exception) {
+                Log.d(TAG, "Remote renderer already initialized: ${e.message}")
+            }
             renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
             renderer.setEnableHardwareScaler(true)
-            remoteRenderers.add(renderer)
+            if (!remoteRenderers.contains(renderer)) {
+                remoteRenderers.add(renderer)
+            }
             remoteVideoTrack?.addSink(renderer)
         } catch (e: Exception) {
             Log.w(TAG, "attachRemoteRenderer error: ${e.message}")
@@ -131,6 +157,7 @@ class WebRtcClient(
         try {
             remoteRenderers.remove(renderer)
             remoteVideoTrack?.removeSink(renderer)
+            renderer.clearImage()
             renderer.release()
         } catch (_: Exception) {}
     }
@@ -148,6 +175,28 @@ class WebRtcClient(
         val adm = JavaAudioDeviceModule.builder(context)
             .setUseHardwareAcousticEchoCanceler(true)
             .setUseHardwareNoiseSuppressor(true)
+            .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
+                override fun onWebRtcAudioRecordInitError(err: String?) {
+                    Log.w(TAG, "AudioRecord init error: $err")
+                }
+                override fun onWebRtcAudioRecordStartError(code: JavaAudioDeviceModule.AudioRecordStartErrorCode?, err: String?) {
+                    Log.w(TAG, "AudioRecord start error: $err")
+                }
+                override fun onWebRtcAudioRecordError(err: String?) {
+                    Log.w(TAG, "AudioRecord error: $err")
+                }
+            })
+            .setAudioTrackErrorCallback(object : JavaAudioDeviceModule.AudioTrackErrorCallback {
+                override fun onWebRtcAudioTrackInitError(err: String?) {
+                    Log.w(TAG, "AudioTrack init error: $err")
+                }
+                override fun onWebRtcAudioTrackStartError(code: JavaAudioDeviceModule.AudioTrackStartErrorCode?, err: String?) {
+                    Log.w(TAG, "AudioTrack start error: $err")
+                }
+                override fun onWebRtcAudioTrackError(err: String?) {
+                    Log.w(TAG, "AudioTrack error: $err")
+                }
+            })
             .createAudioDeviceModule()
 
         val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
@@ -213,6 +262,7 @@ class WebRtcClient(
                 val track = transceiver?.receiver?.track()
                 if (track is VideoTrack) {
                     remoteVideoTrack = track
+                    _remoteVideoTrackFlow.value = track
                     for (renderer in remoteRenderers) {
                         try {
                             track.addSink(renderer)
@@ -240,9 +290,9 @@ class WebRtcClient(
             override fun onRenegotiationNeeded() {}
         })
 
-        // 4. Attach tracks to PeerConnection
-        localAudioTrack?.let { peerConnection?.addTrack(it) }
-        localVideoTrack?.let { peerConnection?.addTrack(it) }
+        // 4. Attach tracks to PeerConnection with stream ID
+        localAudioTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
+        localVideoTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
 
         // 5. If caller, generate initial SDP Offer
         if (isCaller) {
@@ -261,14 +311,34 @@ class WebRtcClient(
 
             isFrontCamera = enumerator.isFrontFacing(chosenCamera)
 
-            videoCapturer = enumerator.createCapturer(chosenCamera, null)
+            videoCapturer = enumerator.createCapturer(chosenCamera, object : CameraVideoCapturer.CameraEventsHandler {
+                override fun onCameraError(errorDescription: String?) {
+                    Log.e(TAG, "Camera error: $errorDescription")
+                }
+                override fun onCameraDisconnected() {
+                    Log.w(TAG, "Camera disconnected")
+                }
+                override fun onCameraFreezed(errorDescription: String?) {
+                    Log.w(TAG, "Camera frozen: $errorDescription")
+                }
+                override fun onCameraOpening(cameraName: String?) {
+                    Log.d(TAG, "Camera opening: $cameraName")
+                }
+                override fun onFirstFrameAvailable() {
+                    Log.d(TAG, "Camera first frame available")
+                }
+                override fun onCameraClosed() {
+                    Log.d(TAG, "Camera closed")
+                }
+            })
             surfaceTextureHelper = SurfaceTextureHelper.create("WebRtcCaptureThread", eglBase.eglBaseContext)
 
             val factory = peerConnectionFactory ?: return
-            videoSource = factory.createVideoSource(videoCapturer!!.isScreencast)
+            val capturer = videoCapturer ?: return
+            videoSource = factory.createVideoSource(capturer.isScreencast)
 
-            videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-            videoCapturer?.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
+            capturer.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
+            capturer.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
 
             localVideoTrack = factory.createVideoTrack("ARDAMSv0", videoSource).apply {
                 setEnabled(true)
@@ -278,6 +348,7 @@ class WebRtcClient(
                     } catch (_: Exception) {}
                 }
             }
+            _localVideoTrackFlow.value = localVideoTrack
         } catch (e: Exception) {
             Log.e(TAG, "Failed setting up camera capture: ${e.message}", e)
         }
@@ -383,30 +454,44 @@ class WebRtcClient(
     }
 
     fun onRemoteSessionDescriptionReceived(desc: RtcSessionDescription) {
-        val type = SessionDescription.Type.valueOf(desc.type.uppercase())
-        val sessionDesc = SessionDescription(type, desc.sdp)
+        if (!isRemoteDescriptionSet.compareAndSet(false, true)) {
+            Log.d(TAG, "Remote session description already set, ignoring duplicate ${desc.type}")
+            return
+        }
+        try {
+            val type = SessionDescription.Type.valueOf(desc.type.uppercase())
+            val sessionDesc = SessionDescription(type, desc.sdp)
 
-        peerConnection?.setRemoteDescription(object : SdpObserver {
-            override fun onSetSuccess() {
-                isRemoteDescriptionSet.set(true)
-                // Drain any pending ICE candidates that arrived before remote SDP description was ready
-                for (cand in pendingCandidates) {
-                    peerConnection?.addIceCandidate(cand)
+            peerConnection?.setRemoteDescription(object : SdpObserver {
+                override fun onSetSuccess() {
+                    Log.i(TAG, "Remote description set successfully for ${desc.type}")
+                    // Drain any pending ICE candidates that arrived before remote SDP description was ready
+                    for (cand in pendingCandidates) {
+                        try {
+                            peerConnection?.addIceCandidate(cand)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed adding pending ICE candidate: ${e.message}")
+                        }
+                    }
+                    pendingCandidates.clear()
+
+                    // If remote SDP was an OFFER, create and dispatch ANSWER
+                    if (type == SessionDescription.Type.OFFER) {
+                        createAnswer()
+                    }
                 }
-                pendingCandidates.clear()
 
-                // If remote SDP was an OFFER, create and dispatch ANSWER
-                if (type == SessionDescription.Type.OFFER) {
-                    createAnswer()
+                override fun onCreateSuccess(p0: SessionDescription?) {}
+                override fun onCreateFailure(err: String?) {}
+                override fun onSetFailure(err: String?) {
+                    Log.e(TAG, "setRemoteDescription failed: $err")
+                    isRemoteDescriptionSet.set(false)
                 }
-            }
-
-            override fun onCreateSuccess(p0: SessionDescription?) {}
-            override fun onCreateFailure(err: String?) {}
-            override fun onSetFailure(err: String?) {
-                Log.e(TAG, "setRemoteDescription failed: $err")
-            }
-        }, sessionDesc)
+            }, sessionDesc)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed setting remote session description: ${e.message}", e)
+            isRemoteDescriptionSet.set(false)
+        }
     }
 
     private fun createAnswer() {
@@ -440,9 +525,17 @@ class WebRtcClient(
     }
 
     fun addIceCandidate(candidate: RtcIceCandidate) {
+        val key = "${candidate.sdpMid}:${candidate.sdpMLineIndex}:${candidate.sdp}"
+        if (!processedCandidates.add(key)) {
+            return
+        }
         val iceCandidate = IceCandidate(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp)
         if (isRemoteDescriptionSet.get()) {
-            peerConnection?.addIceCandidate(iceCandidate)
+            try {
+                peerConnection?.addIceCandidate(iceCandidate)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed adding ice candidate: ${e.message}")
+            }
         } else {
             pendingCandidates.add(iceCandidate)
         }
@@ -451,14 +544,9 @@ class WebRtcClient(
     fun close() {
         if (isClosed.getAndSet(true)) return
 
-        for (r in localRenderers) {
-            try { r.release() } catch (_: Exception) {}
-        }
+        _localVideoTrackFlow.value = null
+        _remoteVideoTrackFlow.value = null
         localRenderers.clear()
-
-        for (r in remoteRenderers) {
-            try { r.release() } catch (_: Exception) {}
-        }
         remoteRenderers.clear()
 
         try {
