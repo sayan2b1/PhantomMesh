@@ -72,14 +72,15 @@ class MeshRoutingTable @Inject constructor() {
      */
     fun addPeer(endpointId: String, displayName: String, connectionType: String) {
         val existing = directConnections[endpointId]
-        val resolvedName = if (displayName.startsWith("Peer-") || displayName.equals("Anonymous", ignoreCase = true)) {
-            if (existing?.displayName != null && !existing.displayName.startsWith("Peer-") && !existing.displayName.equals("Anonymous", ignoreCase = true)) {
+        val cleanName = displayName.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
+        val resolvedName = if (cleanName.startsWith("User-") || cleanName.equals("Anonymous", ignoreCase = true)) {
+            if (existing?.displayName != null && !existing.displayName.startsWith("User-") && !existing.displayName.startsWith("Peer-") && !existing.displayName.equals("Anonymous", ignoreCase = true)) {
                 existing.displayName
             } else {
-                displayName
+                cleanName
             }
         } else {
-            displayName
+            cleanName
         }
         val node = MeshNode(
             endpointId = endpointId,
@@ -110,10 +111,11 @@ class MeshRoutingTable @Inject constructor() {
     fun associateIdentity(endpointId: String, userId: String, displayName: String? = null) {
         val cleanUser = userId.trim().lowercase()
         val existing = directConnections[endpointId]
-        val resolvedName = if (!displayName.isNullOrBlank() && !displayName.startsWith("Peer-") && !displayName.equals("Anonymous", ignoreCase = true)) {
-            displayName
+        val cleanName = displayName?.removePrefix("Peer ")?.removePrefix("Peer-")?.removePrefix("PEER: ")?.trim()
+        val resolvedName = if (!cleanName.isNullOrBlank() && !cleanName.startsWith("User-") && !cleanName.startsWith("Peer-") && !cleanName.equals("Anonymous", ignoreCase = true)) {
+            cleanName
         } else {
-            existing?.displayName ?: displayName ?: "Peer-${endpointId.take(4)}"
+            existing?.displayName ?: cleanName ?: "User-${endpointId.take(4)}"
         }
         val node = (existing ?: MeshNode(endpointId = endpointId, connectionType = "bluetooth")).copy(
             userId = cleanUser,

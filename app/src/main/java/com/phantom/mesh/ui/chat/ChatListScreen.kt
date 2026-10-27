@@ -296,7 +296,8 @@ fun ChatListScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(connectedPeers, key = { it.endpointId }) { peer ->
-                            val peerTarget = peer.displayName.ifBlank { peer.userId ?: peer.endpointId }
+                            val rawTarget = peer.displayName.ifBlank { peer.userId ?: peer.endpointId }
+                            val peerTarget = rawTarget.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
                             val myIdentity = currentUsername ?: currentUserId ?: "user"
                             val chatId = com.phantom.mesh.data.repository.ChatRepository.generateChatId(myIdentity, peerTarget)
 
@@ -388,25 +389,29 @@ fun ChatListScreen(
             title = { Text("New Anonymous Chat", color = NeonCyan) },
             text = {
                 Column {
-                    Text("Enter peer username or user ID to start conversation:", color = TextSecondary)
+                    Text("Enter username or user ID to start conversation:", color = TextSecondary)
                     Spacer(modifier = Modifier.height(12.dp))
                     OutlinedTextField(
                         value = newChatPeerId,
                         onValueChange = { newChatPeerId = it },
-                        label = { Text("Peer Identity") },
+                        label = { Text("Username / User ID") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
 
                     if (connectedPeers.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text("Connected nearby peers:", fontSize = 12.sp, color = TextMuted)
+                        Text("Connected nearby users:", fontSize = 12.sp, color = TextMuted)
                         Spacer(modifier = Modifier.height(6.dp))
                         androidx.compose.foundation.lazy.LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             items(connectedPeers, key = { it.endpointId }) { peer ->
                                 val target = peer.displayName.ifBlank { peer.userId ?: peer.endpointId }
+                                    .removePrefix("Peer ")
+                                    .removePrefix("Peer-")
+                                    .removePrefix("PEER: ")
+                                    .trim()
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(14.dp))
@@ -428,7 +433,12 @@ fun ChatListScreen(
                 TextButton(
                     onClick = {
                         if (newChatPeerId.isNotBlank()) {
-                            val cleanPeer = newChatPeerId.trim().lowercase()
+                            val cleanPeer = newChatPeerId.trim()
+                                .removePrefix("Peer ")
+                                .removePrefix("Peer-")
+                                .removePrefix("PEER: ")
+                                .trim()
+                                .lowercase()
                             val myIdentity = currentUsername ?: currentUserId ?: "user"
                             val generatedId = com.phantom.mesh.data.repository.ChatRepository.generateChatId(myIdentity, cleanPeer)
                             showNewChatDialog = false
@@ -491,8 +501,17 @@ fun ChatItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val rawTitle = chat.chatTitle ?: chat.participants
+                val cleanTitle = remember(rawTitle) {
+                    rawTitle
+                        .removePrefix("Peer ")
+                        .removePrefix("Peer-")
+                        .removePrefix("PEER: ")
+                        .trim()
+                        .ifBlank { "Encrypted Contact" }
+                }
                 Text(
-                    text = chat.chatTitle ?: chat.participants,
+                    text = cleanTitle,
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                     maxLines = 1,

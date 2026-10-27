@@ -31,6 +31,41 @@ class SettingsViewModel @Inject constructor(
     val isBluetoothOnlyMode: StateFlow<Boolean> = sessionManager.bluetoothOnlyModeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val chatWallpaperPath: StateFlow<String?> = sessionManager.chatWallpaperFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun setWallpaperFromUri(context: android.content.Context, uri: android.net.Uri) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val wallpaperFile = java.io.File(context.filesDir, "chat_wallpaper.jpg")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    java.io.FileOutputStream(wallpaperFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                sessionManager.setChatWallpaperPath(wallpaperFile.absolutePath)
+                _statusMessage.value = "Chat wallpaper updated successfully!"
+            } catch (e: Exception) {
+                _statusMessage.value = "Failed to update wallpaper: ${e.message}"
+            }
+        }
+    }
+
+    fun removeWallpaper(context: android.content.Context) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val wallpaperFile = java.io.File(context.filesDir, "chat_wallpaper.jpg")
+                if (wallpaperFile.exists()) {
+                    wallpaperFile.delete()
+                }
+                sessionManager.setChatWallpaperPath(null)
+                _statusMessage.value = "Chat theme reset to default."
+            } catch (e: Exception) {
+                _statusMessage.value = "Failed to reset wallpaper: ${e.message}"
+            }
+        }
+    }
+
     fun setBluetoothOnlyMode(enabled: Boolean) {
         viewModelScope.launch {
             sessionManager.setBluetoothOnlyMode(enabled)

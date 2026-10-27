@@ -42,7 +42,8 @@ class ChatRepository @Inject constructor(
     private val routingTable: MeshRoutingTable,
     private val sessionManager: SessionManager,
     private val networkStateManager: NetworkStateManager,
-    private val meshConnectionManager: MeshConnectionManager
+    private val meshConnectionManager: MeshConnectionManager,
+    private val notificationHelper: com.phantom.mesh.util.NotificationHelper
 ) {
     private val firestore = FirebaseFirestore.getInstance()
     private val storage = FirebaseStorage.getInstance()
@@ -737,6 +738,12 @@ class ChatRepository @Inject constructor(
         try {
             messageDao.insertMessage(incomingMessage)
             chatDao.incrementUnread(chatId)
+            notificationHelper.showNewMessageNotification(
+                chatId = chatId,
+                senderName = senderIdentity,
+                content = displayPreview,
+                dataType = packet.dataType
+            )
         } catch (e: Exception) {
             android.util.Log.e("ChatRepository", "Failed to insert incoming mesh message: ${e.message}", e)
         }
@@ -890,6 +897,12 @@ class ChatRepository @Inject constructor(
                             try {
                                 messageDao.insertMessage(msg)
                                 chatDao.incrementUnread(chatId)
+                                notificationHelper.showNewMessageNotification(
+                                    chatId = chatId,
+                                    senderName = displayPeer,
+                                    content = previewText,
+                                    dataType = dataType
+                                )
                             } catch (e: Exception) {
                                 android.util.Log.e("ChatRepository", "Failed to insert cloud message: ${e.message}", e)
                             }
@@ -1022,6 +1035,12 @@ class ChatRepository @Inject constructor(
                                 )
                                 messageDao.insertMessage(msg)
                                 chatDao.incrementUnread(chatId)
+                                notificationHelper.showNewMessageNotification(
+                                    chatId = chatId,
+                                    senderName = senderUsername,
+                                    content = previewText,
+                                    dataType = dataType
+                                )
                             }
                         } catch (e: Exception) {
                             android.util.Log.e("ChatRepository", "Polling error for chat ${chat.chatId}: ${e.message}")
@@ -1048,12 +1067,19 @@ class ChatRepository @Inject constructor(
         timestamp: Long,
         transport: String
     ) {
+        val cleanTitle = targetUserId
+            .removePrefix("Peer ")
+            .removePrefix("Peer-")
+            .removePrefix("PEER: ")
+            .trim()
+            .ifBlank { "Encrypted Contact" }
+
         val existing = chatDao.getChatById(chatId)
         if (existing == null) {
             val newChat = ChatEntity(
                 chatId = chatId,
                 participants = targetUserId,
-                chatTitle = "Peer $targetUserId",
+                chatTitle = cleanTitle,
                 lastMessagePreview = preview,
                 lastMessageTimestamp = timestamp,
                 unreadCount = 0,
@@ -1061,7 +1087,21 @@ class ChatRepository @Inject constructor(
             )
             chatDao.insertChat(newChat)
         } else {
-            chatDao.updateLastMessage(chatId, preview, timestamp, transport)
+            // Clean up existing titles that had "Peer " prefix
+            if (existing.chatTitle?.startsWith("Peer ") == true ||
+                existing.chatTitle?.startsWith("Peer-") == true ||
+                existing.chatTitle?.startsWith("PEER: ") == true
+            ) {
+                val updatedChat = existing.copy(
+                    chatTitle = cleanTitle,
+                    lastMessagePreview = preview,
+                    lastMessageTimestamp = timestamp,
+                    transportType = transport
+                )
+                chatDao.updateChat(updatedChat)
+            } else {
+                chatDao.updateLastMessage(chatId, preview, timestamp, transport)
+            }
         }
     }
 
