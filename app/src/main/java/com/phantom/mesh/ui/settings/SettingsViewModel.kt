@@ -82,6 +82,19 @@ class SettingsViewModel @Inject constructor(
 
     init {
         refreshAvailableBackups()
+        loadSecurityQuestion()
+    }
+
+    private val _securityQuestion = MutableStateFlow<String?>(null)
+    val securityQuestion: StateFlow<String?> = _securityQuestion.asStateFlow()
+
+    fun loadSecurityQuestion() {
+        viewModelScope.launch {
+            val u = sessionManager.getUsername()
+            if (!u.isNullOrBlank()) {
+                _securityQuestion.value = authRepository.getSecurityQuestionForUsername(u)
+            }
+        }
     }
 
     fun refreshAvailableBackups() {
@@ -243,6 +256,67 @@ class SettingsViewModel @Inject constructor(
                 _statusMessage.value = "Password updated successfully!"
             }.onFailure { e ->
                 _statusMessage.value = e.message ?: "Failed to change password"
+            }
+        }
+    }
+
+    fun updateSecurityQuestion(question: String, answer: String) {
+        if (question.isBlank() || answer.isBlank()) {
+            _statusMessage.value = "Security question and answer cannot be blank"
+            return
+        }
+        viewModelScope.launch {
+            val userId = sessionManager.getUserId()
+            if (userId != null) {
+                val result = authRepository.updateSecurityQuestion(userId, question, answer)
+                result.onSuccess {
+                    _securityQuestion.value = question
+                    _statusMessage.value = "Security recovery question updated successfully!"
+                }.onFailure { e ->
+                    _statusMessage.value = e.message ?: "Failed to update security question"
+                }
+            } else {
+                _statusMessage.value = "User session not found"
+            }
+        }
+    }
+
+    fun resetPasswordWithSecurityAnswer(
+        answer: String,
+        newPassword: String,
+        confirmPassword: String,
+        onComplete: (Boolean) -> Unit = {}
+    ) {
+        val u = sessionManager.getUsername()
+        if (u.isNullOrBlank()) {
+            _statusMessage.value = "No active user session found"
+            onComplete(false)
+            return
+        }
+        if (answer.isBlank()) {
+            _statusMessage.value = "Please enter your secret answer"
+            onComplete(false)
+            return
+        }
+        if (newPassword.length < 8) {
+            _statusMessage.value = "New password must be at least 8 characters"
+            onComplete(false)
+            return
+        }
+        if (newPassword != confirmPassword) {
+            _statusMessage.value = "New passwords do not match"
+            onComplete(false)
+            return
+        }
+
+        viewModelScope.launch {
+            val result = authRepository.resetPasswordWithSecurityAnswer(u, answer, newPassword)
+            result.onSuccess {
+                _statusMessage.value = "Password successfully reset via Security Question!"
+                onComplete(true)
+            }.onFailure { e ->
+                _statusMessage.value = e.message ?: "Failed to reset password"
+                onComplete(false)
             }
         }
     }

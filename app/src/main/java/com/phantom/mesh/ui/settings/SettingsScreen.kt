@@ -14,6 +14,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DoneAll
@@ -93,8 +96,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.phantom.mesh.data.local.backup.BackupFrequency
+import com.phantom.mesh.util.SecurityQuestions
 import com.phantom.mesh.ui.theme.DarkBackground
 import com.phantom.mesh.ui.theme.DarkCard
 import com.phantom.mesh.ui.theme.DarkSurface
@@ -151,6 +156,7 @@ fun SettingsScreen(
     val isBackupRunning by viewModel.isBackupRunning.collectAsState()
     val isRestoreRunning by viewModel.isRestoreRunning.collectAsState()
     val availableBackups by viewModel.availableBackups.collectAsState()
+    val securityQuestion by viewModel.securityQuestion.collectAsState()
 
     var currentSubPage by remember { mutableStateOf(SettingsSubPage.MAIN) }
 
@@ -162,6 +168,8 @@ fun SettingsScreen(
     var showNukeDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showRestoreDialog by remember { mutableStateOf(false) }
+    var showSecurityQuestionDialog by remember { mutableStateOf(false) }
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
 
     val wallpaperPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -272,7 +280,8 @@ fun SettingsScreen(
                             onToggleReadReceipts = { viewModel.setReadReceiptsEnabled(it) },
                             onToggleBluetoothOnly = { viewModel.setBluetoothOnlyMode(it) },
                             onNavigate = { currentSubPage = it },
-                            onLogoutClick = { showLogoutDialog = true }
+                            onLogoutClick = { showLogoutDialog = true },
+                            onForgotPasswordClick = { showForgotPasswordDialog = true }
                         )
                     }
                     SettingsSubPage.BACKUP_RESTORE -> {
@@ -309,7 +318,9 @@ fun SettingsScreen(
                     SettingsSubPage.PRIVACY_SECURITY -> {
                         SettingsPrivacySecurityContent(
                             readReceiptsEnabled = readReceiptsEnabled,
+                            currentSecurityQuestion = securityQuestion,
                             onToggleReadReceipts = { viewModel.setReadReceiptsEnabled(it) },
+                            onOpenSecurityQuestionDialog = { showSecurityQuestionDialog = true },
                             onSaveDecoy = { viewModel.updateDecoyPassword(it) },
                             onTriggerEmergencyWipe = { showNukeDialog = true }
                         )
@@ -328,7 +339,8 @@ fun SettingsScreen(
                             onChangeUsername = { viewModel.changeUsername(it) },
                             onChangePassword = { old, new, confirm ->
                                 viewModel.changePassword(old, new, confirm)
-                            }
+                            },
+                            onForgotPasswordClick = { showForgotPasswordDialog = true }
                         )
                     }
                 }
@@ -531,6 +543,31 @@ fun SettingsScreen(
             containerColor = DarkCard
         )
     }
+
+    // ── SECURITY QUESTION CONFIGURATION DIALOG ──────────────────────────────
+    if (showSecurityQuestionDialog) {
+        SecurityQuestionSettingsDialog(
+            currentQuestion = securityQuestion,
+            onDismiss = { showSecurityQuestionDialog = false },
+            onSave = { question, answer ->
+                viewModel.updateSecurityQuestion(question, answer)
+            }
+        )
+    }
+
+    // ── FORGOT PASSWORD RECOVERY DIALOG ─────────────────────────────────────
+    if (showForgotPasswordDialog) {
+        ForgotPasswordSettingsDialog(
+            securityQuestion = securityQuestion,
+            onDismiss = { showForgotPasswordDialog = false },
+            onOpenSetupQuestion = {
+                showSecurityQuestionDialog = true
+            },
+            onResetPassword = { answer, newPass, confirmPass, onDone ->
+                viewModel.resetPasswordWithSecurityAnswer(answer, newPass, confirmPass, onDone)
+            }
+        )
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -549,7 +586,8 @@ private fun SettingsMainContent(
     onToggleReadReceipts: (Boolean) -> Unit,
     onToggleBluetoothOnly: (Boolean) -> Unit,
     onNavigate: (SettingsSubPage) -> Unit,
-    onLogoutClick: () -> Unit
+    onLogoutClick: () -> Unit,
+    onForgotPasswordClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -716,7 +754,7 @@ private fun SettingsMainContent(
 
         SettingsNavigationTile(
             title = "Privacy and Security",
-            subtitle = "Read receipts (${if (readReceiptsEnabled) "ON" else "OFF"}) • Decoy passphrase • Wipe",
+            subtitle = "Read receipts (${if (readReceiptsEnabled) "ON" else "OFF"}) • Security question • Decoy • Wipe",
             icon = Icons.Default.Security,
             iconTint = DuressCrimson,
             onClick = { onNavigate(SettingsSubPage.PRIVACY_SECURITY) }
@@ -730,6 +768,16 @@ private fun SettingsMainContent(
             icon = Icons.Default.Lock,
             iconTint = NeonCyan,
             onClick = { onNavigate(SettingsSubPage.ACCOUNT_CREDENTIALS) }
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        SettingsNavigationTile(
+            title = "Forgot Password?",
+            subtitle = "Reset password using secret recovery question",
+            icon = Icons.Default.Lock,
+            iconTint = WarningAmber,
+            onClick = onForgotPasswordClick
         )
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -1605,7 +1653,9 @@ private fun SettingsChatAppearanceContent(
 @Composable
 private fun SettingsPrivacySecurityContent(
     readReceiptsEnabled: Boolean,
+    currentSecurityQuestion: String?,
     onToggleReadReceipts: (Boolean) -> Unit,
+    onOpenSecurityQuestionDialog: () -> Unit,
     onSaveDecoy: (String) -> Unit,
     onTriggerEmergencyWipe: () -> Unit
 ) {
@@ -1691,7 +1741,87 @@ private fun SettingsPrivacySecurityContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // ── 2. DECOY DURESS PASSPHRASE ──────────────────────────────────────
+        // ── 2. ACCOUNT RECOVERY (SECURITY QUESTION) ─────────────────────────
+        Text(
+            text = "ACCOUNT RECOVERY QUESTION",
+            style = MaterialTheme.typography.labelSmall,
+            color = NeonCyan,
+            fontFamily = FontFamily.Monospace
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(DarkCard)
+                .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+                .padding(16.dp)
+        ) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.Security, contentDescription = null, tint = NeonCyan)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Security Recovery Question",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (!currentSecurityQuestion.isNullOrBlank()) {
+                    Text(
+                        text = "CURRENT RECOVERY QUESTION:",
+                        fontSize = 10.sp,
+                        color = NeonGreen,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "\"$currentSecurityQuestion\"",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "This introspective question is used to authenticate password resets if you forget your master password.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                } else {
+                    Text(
+                        text = "No security question configured yet. If you forget your password, you will not be able to recover your account without setting a security question.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = WarningAmber
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    onClick = onOpenSecurityQuestionDialog,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = if (currentSecurityQuestion.isNullOrBlank()) "ADD SECURITY QUESTION" else "CHANGE SECURITY QUESTION",
+                        color = DarkBackground,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // ── 3. DECOY DURESS PASSPHRASE ──────────────────────────────────────
         Text(
             text = "DURESS STEALTH PASSPHRASE",
             style = MaterialTheme.typography.labelSmall,
@@ -1958,7 +2088,8 @@ private fun SettingsAccountCredentialsContent(
     currentUsername: String,
     isChangingUsername: Boolean,
     onChangeUsername: (String) -> Unit,
-    onChangePassword: (old: String, new: String, confirm: String) -> Unit
+    onChangePassword: (old: String, new: String, confirm: String) -> Unit,
+    onForgotPasswordClick: () -> Unit
 ) {
     var newUsernameInput by remember { mutableStateOf("") }
 
@@ -2194,6 +2325,400 @@ private fun SettingsAccountCredentialsContent(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp
                     )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                TextButton(
+                    onClick = onForgotPasswordClick,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Forgot current password? Reset via Security Question",
+                        color = WarningAmber,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIALOG: ADD / CHANGE SECURITY QUESTION
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun SecurityQuestionSettingsDialog(
+    currentQuestion: String?,
+    onDismiss: () -> Unit,
+    onSave: (question: String, answer: String) -> Unit
+) {
+    var selectedQuestion by remember {
+        mutableStateOf(currentQuestion ?: SecurityQuestions.QUESTIONS.first())
+    }
+    var showPickerList by remember { mutableStateOf(false) }
+    var secretAnswer by remember { mutableStateOf("") }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(DarkCard)
+                .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+                .padding(20.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (currentQuestion.isNullOrBlank()) "ADD QUESTION" else "CHANGE QUESTION",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = NeonCyan,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Select a question only you know the answer to, then provide your secret answer:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Selected Question Box (Tap to toggle list)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DarkBackground)
+                        .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                        .clickable { showPickerList = !showPickerList }
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "SELECTED QUESTION (TAP TO CHANGE):",
+                            fontSize = 9.sp,
+                            color = NeonCyan,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = selectedQuestion,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextPrimary
+                        )
+                    }
+                }
+
+                if (showPickerList) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 200.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(DarkSurfaceVariant)
+                            .border(1.dp, NeonCyan.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                            .padding(6.dp)
+                    ) {
+                        LazyColumn {
+                            items(SecurityQuestions.QUESTIONS) { q ->
+                                val isSelected = q == selectedQuestion
+                                Text(
+                                    text = q,
+                                    fontSize = 12.sp,
+                                    color = if (isSelected) NeonCyan else TextPrimary,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (isSelected) NeonCyan.copy(alpha = 0.15f) else Color.Transparent)
+                                        .clickable {
+                                            selectedQuestion = q
+                                            showPickerList = false
+                                        }
+                                        .padding(8.dp)
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                OutlinedTextField(
+                    value = secretAnswer,
+                    onValueChange = { secretAnswer = it },
+                    label = { Text("Your Secret Answer") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = NeonCyan.copy(alpha = 0.3f),
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        focusedLabelColor = NeonCyan,
+                        unfocusedLabelColor = TextMuted
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                Button(
+                    onClick = {
+                        onSave(selectedQuestion, secretAnswer.trim())
+                        onDismiss()
+                    },
+                    enabled = secretAnswer.isNotBlank(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = "SAVE SECURITY QUESTION",
+                        color = DarkBackground,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIALOG: FORGOT PASSWORD RECOVERY
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun ForgotPasswordSettingsDialog(
+    securityQuestion: String?,
+    onDismiss: () -> Unit,
+    onOpenSetupQuestion: () -> Unit,
+    onResetPassword: (answer: String, newPass: String, confirmPass: String, onDone: (Boolean) -> Unit) -> Unit
+) {
+    var answer by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var newPasswordVisible by remember { mutableStateOf(false) }
+    var isSubmitting by remember { mutableStateOf(false) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(DarkCard)
+                .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+                .padding(20.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = WarningAmber,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "RESET PASSWORD",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = WarningAmber,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                if (securityQuestion.isNullOrBlank()) {
+                    Text(
+                        text = "No security recovery question is set up on your account. To use the recovery feature, please configure a security question in Privacy & Security first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Button(
+                        onClick = {
+                            onDismiss()
+                            onOpenSetupQuestion()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(
+                            text = "SET UP SECURITY QUESTION",
+                            color = DarkBackground,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(DarkBackground)
+                            .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Text(
+                                text = "SECURITY QUESTION:",
+                                fontSize = 9.sp,
+                                color = NeonCyan,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = securityQuestion,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextPrimary
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = answer,
+                        onValueChange = { answer = it },
+                        label = { Text("Your Secret Answer") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = NeonCyan.copy(alpha = 0.3f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedLabelColor = NeonCyan,
+                            unfocusedLabelColor = TextMuted
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it },
+                        label = { Text("New Password (min 8 chars)") },
+                        singleLine = true,
+                        visualTransformation = if (newPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { newPasswordVisible = !newPasswordVisible }) {
+                                Icon(
+                                    imageVector = if (newPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = null,
+                                    tint = TextMuted
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = NeonCyan.copy(alpha = 0.3f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedLabelColor = NeonCyan,
+                            unfocusedLabelColor = TextMuted
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it },
+                        label = { Text("Confirm New Password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = NeonCyan.copy(alpha = 0.3f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedLabelColor = NeonCyan,
+                            unfocusedLabelColor = TextMuted
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Button(
+                        onClick = {
+                            isSubmitting = true
+                            onResetPassword(answer.trim(), newPassword, confirmPassword) { success ->
+                                isSubmitting = false
+                                if (success) onDismiss()
+                            }
+                        },
+                        enabled = !isSubmitting && answer.isNotBlank() && newPassword.length >= 8 && newPassword == confirmPassword,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = WarningAmber),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isSubmitting) {
+                            CircularProgressIndicator(color = DarkBackground, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(
+                                text = "RESET PASSWORD NOW",
+                                color = DarkBackground,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
                 }
             }
         }
