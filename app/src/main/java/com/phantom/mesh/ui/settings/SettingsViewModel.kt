@@ -60,6 +60,15 @@ class SettingsViewModel @Inject constructor(
     private val _availableBackups = MutableStateFlow<List<BackupMetadata>>(emptyList())
     val availableBackups: StateFlow<List<BackupMetadata>> = _availableBackups.asStateFlow()
 
+    private val _securityQuestion = MutableStateFlow<String?>(null)
+    val securityQuestion: StateFlow<String?> = _securityQuestion.asStateFlow()
+
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
+    private val _isChangingUsername = MutableStateFlow(false)
+    val isChangingUsername: StateFlow<Boolean> = _isChangingUsername.asStateFlow()
+
     // ── Appearance & Personalization Flows ─────────────────────────────
     val senderBubbleColor: StateFlow<String> = sessionManager.senderBubbleColorFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getSenderBubbleColor())
@@ -85,21 +94,26 @@ class SettingsViewModel @Inject constructor(
         loadSecurityQuestion()
     }
 
-    private val _securityQuestion = MutableStateFlow<String?>(null)
-    val securityQuestion: StateFlow<String?> = _securityQuestion.asStateFlow()
-
     fun loadSecurityQuestion() {
         viewModelScope.launch {
-            val u = sessionManager.getUsername()
-            if (!u.isNullOrBlank()) {
-                _securityQuestion.value = authRepository.getSecurityQuestionForUsername(u)
+            try {
+                val u = sessionManager.getUsername()
+                if (!u.isNullOrBlank()) {
+                    _securityQuestion.value = authRepository.getSecurityQuestionForUsername(u)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsViewModel", "Failed to load security question", e)
             }
         }
     }
 
     fun refreshAvailableBackups() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            _availableBackups.value = localChatBackupManager.listAvailableBackups()
+            try {
+                _availableBackups.value = localChatBackupManager.listAvailableBackups()
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsViewModel", "Failed to list available backups", e)
+            }
         }
     }
 
@@ -222,9 +236,6 @@ class SettingsViewModel @Inject constructor(
     }
 
 
-    private val _statusMessage = MutableStateFlow<String?>(null)
-    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
-
     fun updateDecoyPassword(passphrase: String) {
         if (passphrase.length < 8) {
             _statusMessage.value = "Decoy passphrase must be at least 8 characters"
@@ -320,9 +331,6 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
-
-    private val _isChangingUsername = MutableStateFlow(false)
-    val isChangingUsername: StateFlow<Boolean> = _isChangingUsername.asStateFlow()
 
     fun changeUsername(newUsername: String) {
         val clean = newUsername.trim()
