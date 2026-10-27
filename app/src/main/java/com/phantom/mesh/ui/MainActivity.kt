@@ -30,6 +30,8 @@ import javax.inject.Inject
 
 import android.content.pm.PackageManager
 
+import com.phantom.mesh.calling.CallManager
+import com.phantom.mesh.ui.calling.CallOverlayScreen
 import com.phantom.mesh.data.repository.ChatRepository
 
 @AndroidEntryPoint
@@ -37,6 +39,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var sessionManager: SessionManager
+
+    @Inject
+    lateinit var callManager: CallManager
 
     @Inject
     lateinit var meshConnectionManager: MeshConnectionManager
@@ -114,6 +119,7 @@ class MainActivity : ComponentActivity() {
             if (userId != null) {
                 meshConnectionManager.setLocalIdentity(userId, username)
                 chatRepository.startCloudListener(userId, username)
+                callManager.startCloudCallListener(username)
                 meshConnectionManager.startMesh()
             }
 
@@ -151,6 +157,21 @@ class MainActivity : ComponentActivity() {
                 }
 
                 PhantomNavGraph(navController = navController, startDestination = initialDestination)
+
+                // ── GLOBAL ACTIVE & INCOMING CALL OVERLAY ───────────────────
+                // Renders across the entire app whenever a call is ringing or active
+                val activeCall by callManager.currentCall.collectAsState()
+                activeCall?.let { call ->
+                    CallOverlayScreen(
+                        call = call,
+                        onMuteToggle = { callManager.toggleMute() },
+                        onSpeakerToggle = { callManager.toggleSpeaker() },
+                        onVideoToggle = { callManager.toggleVideo() },
+                        onFlipCamera = { callManager.flipCamera() },
+                        onAccept = { callManager.acceptCall() },
+                        onEndCall = { callManager.endCall() }
+                    )
+                }
             }
         }
     }

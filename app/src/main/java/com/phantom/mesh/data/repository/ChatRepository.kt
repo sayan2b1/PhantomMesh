@@ -704,6 +704,10 @@ class ChatRepository @Inject constructor(
     // ── Incoming Packet Handlers ───────────────────────────────────────────
 
     private suspend fun handleIncomingMeshPacket(packet: MeshPacket) {
+        if (packet.dataType.startsWith("call_")) {
+            return
+        }
+
         // 1. Handle remote delete command IMMEDIATELY
         if (packet.dataType == "delete_msg") {
             val deletedMessageId = packet.data.trim().ifBlank { packet.refMessageId?.trim() ?: "" }
