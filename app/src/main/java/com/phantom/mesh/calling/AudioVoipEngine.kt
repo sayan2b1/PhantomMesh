@@ -96,14 +96,15 @@ class AudioVoipEngine(
     private var recordingJob: Job? = null
     private var playbackJob: Job? = null
 
-    // Serialized ultra-low-latency playback queue (capped at 3 chunks = ~300ms) eliminating drift and delay
-    private val playbackChannel = Channel<ByteArray>(capacity = 3)
+    // Serialized ultra-low-latency playback queue (capacity = 8 for smooth cellular jitter handling)
+    private val playbackChannel = Channel<ByteArray>(capacity = 8)
 
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
 
     private val isRunning = AtomicBoolean(false)
     private val isMuted = AtomicBoolean(false)
+    private var currentSpeakerOn: Boolean = true
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
@@ -112,22 +113,50 @@ class AudioVoipEngine(
     }
 
     fun setSpeakerOn(speakerOn: Boolean) {
+        currentSpeakerOn = speakerOn
         try {
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val speakerDevice = audioManager?.availableCommunicationDevices?.firstOrNull {
-                    it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                }
-                if (speakerOn && speakerDevice != null) {
-                    audioManager?.setCommunicationDevice(speakerDevice)
+                if (speakerOn) {
+                    val speakerDevice = audioManager?.availableCommunicationDevices?.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speakerDevice != null) {
+                        audioManager?.setCommunicationDevice(speakerDevice)
+                    }
                 } else {
-                    audioManager?.clearCommunicationDevice()
+                    val earpieceDevice = audioManager?.availableCommunicationDevices?.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    }
+                    if (earpieceDevice != null) {
+                        audioManager?.setCommunicationDevice(earpieceDevice)
+                    } else {
+                        audioManager?.clearCommunicationDevice()
+                    }
                 }
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager?.isSpeakerphoneOn = speakerOn
+            }
+
+            @Suppress("DEPRECATION")
+            audioManager?.isSpeakerphoneOn = speakerOn
+
+            // Boost call stream volume to ensure crystal clear audibility on both earpiece and speaker
+            val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) ?: 1
+            val currentVol = audioManager?.getStreamVolume(AudioManager.STREAM_VOICE_CALL) ?: 0
+            if (currentVol < (maxVol * 0.75).toInt()) {
+                audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (maxVol * 0.9).toInt(), 0)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to toggle speakerphone: ${e.message}")
+        }
+    }
+
+    private fun applyDigitalGain(buffer: ByteArray, bytesRead: Int, gain: Float = 1.8f) {
+        for (i in 0 until bytesRead - 1 step 2) {
+            val sample = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
+            val boosted = (sample.toShort() * gain).toInt().coerceIn(-32767, 32767)
+            buffer[i] = (boosted and 0xFF).toByte()
+            buffer[i + 1] = (boosted shr 8).toByte()
         }
     }
 
@@ -141,6 +170,9 @@ class AudioVoipEngine(
             } catch (e: Exception) {
                 Log.w(TAG, "Failed setting audio mode to MODE_IN_COMMUNICATION: ${e.message}")
             }
+
+            // Apply speaker routing immediately after setting MODE_IN_COMMUNICATION to avoid OEM reset
+            setSpeakerOn(currentSpeakerOn)
 
             // 1. Initialize AudioTrack for real-time playback
             val outMinBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, AUDIO_FORMAT)
@@ -165,6 +197,7 @@ class AudioVoipEngine(
                 .build()
 
             if (audioTrack?.state == AudioTrack.STATE_INITIALIZED) {
+                audioTrack?.setVolume(AudioTrack.getMaxVolume())
                 audioTrack?.play()
                 Log.i(TAG, "AudioTrack initialized and playing at $SAMPLE_RATE Hz")
             } else {
@@ -237,7 +270,7 @@ class AudioVoipEngine(
             audioRecord?.startRecording()
             Log.i(TAG, "AudioRecord started capture at $SAMPLE_RATE Hz")
 
-            // 4. Audio capture loop with 300ms chunking
+            // 4. Audio capture loop with 100ms chunking and digital gain boost
             recordingJob = audioScope.launch {
                 val readBuf = ByteArray(READ_BUF_SIZE)
                 val chunkStream = java.io.ByteArrayOutputStream(CHUNK_SIZE)
@@ -254,6 +287,7 @@ class AudioVoipEngine(
                     }
                     if (read > 0) {
                         if (!isMuted.get()) {
+                            applyDigitalGain(readBuf, read, 1.8f)
                             chunkStream.write(readBuf, 0, read)
                             if (chunkStream.size() >= CHUNK_SIZE) {
                                 val chunk = chunkStream.toByteArray()

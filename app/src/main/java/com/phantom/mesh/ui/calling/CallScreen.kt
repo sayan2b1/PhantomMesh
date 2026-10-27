@@ -30,11 +30,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -510,7 +511,7 @@ fun CallOverlayScreen(
                             // Speakerphone Toggle
                             IconButton(onClick = onSpeakerToggle) {
                                 Icon(
-                                    imageVector = Icons.Default.PlayArrow,
+                                    imageVector = if (call.isSpeakerOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                                     contentDescription = "Speaker",
                                     tint = if (call.isSpeakerOn) NeonGreen else TextSecondary,
                                     modifier = Modifier.size(28.dp)

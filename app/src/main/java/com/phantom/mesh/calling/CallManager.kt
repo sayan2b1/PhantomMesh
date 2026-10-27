@@ -111,12 +111,17 @@ class CallManager @Inject constructor(
 
     private val incomingCallListeners = mutableListOf<ListenerRegistration>()
     private var activeCallDocListener: ListenerRegistration? = null
-    private var cloudStreamListener: ListenerRegistration? = null
+    private var cloudAudioListener: ListenerRegistration? = null
+    private var cloudVideoListener: ListenerRegistration? = null
+    private var legacyCloudStreamListener: ListenerRegistration? = null
 
-    private var isCloudWriteInFlight = false
+    private var isCloudAudioWriteInFlight = false
     private var pendingAudioB64: String? = null
+    private var audioStreamSeq = 0L
+
+    private var isCloudVideoWriteInFlight = false
     private var pendingVideoB64: String? = null
-    private var streamSeq = 0
+    private var videoStreamSeq = 0L
 
     init {
         // 1. Listen for incoming calling packets on the Mesh (Bluetooth / Wi-Fi Direct)
@@ -309,7 +314,7 @@ class CallManager @Inject constructor(
             status = CallStatus.OUTGOING_CALLING,
             isIncoming = false,
             isVideoEnabled = callType == CallType.VIDEO,
-            isSpeakerOn = callType == CallType.VIDEO,
+            isSpeakerOn = true,
             transportMode = initialMode
         )
 
@@ -317,9 +322,7 @@ class CallManager @Inject constructor(
         SoundEffectManager.startOutgoingRingtone()
 
         audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-        if (callType == CallType.VIDEO) {
-            audioVoipEngine?.setSpeakerOn(true)
-        }
+        audioVoipEngine?.setSpeakerOn(true)
 
         // 1. Signal call offer over Cloud Firestore
         try {
@@ -408,7 +411,7 @@ class CallManager @Inject constructor(
             status = CallStatus.INCOMING_RINGING,
             isIncoming = true,
             isVideoEnabled = callType == CallType.VIDEO,
-            isSpeakerOn = callType == CallType.VIDEO,
+            isSpeakerOn = true,
             transportMode = mode
         )
 
@@ -554,11 +557,11 @@ class CallManager @Inject constructor(
                     lanVoipEngine?.sendAudio(pcmChunk)
                 }
 
-                // 2. Cloud Relay (G.711 mu-law compressed, zero-backlog single-flight)
+                // 2. Cloud Relay (Dedicated low-latency audio stream via G.711 mu-law)
                 if (mode == CallTransportMode.CLOUD_RELAY || (mode == CallTransportMode.SAME_WIFI_LAN && networkStateManager.isInternetAvailable.value)) {
                     val muLaw = AudioVoipEngine.G711.linearToMuLaw(pcmChunk)
                     val b64 = Base64.encodeToString(muLaw, Base64.NO_WRAP)
-                    sendCloudMedia(call.callId, myRole, audio = b64, video = null)
+                    sendCloudAudio(call.callId, myRole, b64)
                 }
 
                 // 3. Bluetooth Mesh P2P
@@ -597,10 +600,10 @@ class CallManager @Inject constructor(
                     lanVoipEngine?.sendVideo(jpegBytes)
                 }
 
-                // 2. Cloud Relay (Real-time Firebase Stream with zero queue buildup)
+                // 2. Cloud Relay (Dedicated video stream document)
                 if (mode == CallTransportMode.CLOUD_RELAY || (mode == CallTransportMode.SAME_WIFI_LAN && networkStateManager.isInternetAvailable.value)) {
                     val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
-                    sendCloudMedia(call.callId, myRole, audio = null, video = b64)
+                    sendCloudVideo(call.callId, myRole, b64)
                 }
 
                 // 3. Bluetooth Mesh P2P
@@ -622,69 +625,106 @@ class CallManager @Inject constructor(
     }
 
     @Synchronized
-    private fun sendCloudMedia(callId: String, role: String, audio: String?, video: String?) {
-        if (audio != null) pendingAudioB64 = audio
-        if (video != null) pendingVideoB64 = video
-        flushPendingCloudMedia(callId, role)
+    private fun sendCloudAudio(callId: String, role: String, audioB64: String) {
+        pendingAudioB64 = audioB64
+        flushPendingCloudAudio(callId, role)
     }
 
     @Synchronized
-    private fun flushPendingCloudMedia(callId: String, role: String) {
-        if (isCloudWriteInFlight) return
-        val audioToSend = pendingAudioB64
-        val videoToSend = pendingVideoB64
-        if (audioToSend == null && videoToSend == null) return
-
+    private fun flushPendingCloudAudio(callId: String, role: String) {
+        if (isCloudAudioWriteInFlight) return
+        val audioToSend = pendingAudioB64 ?: return
         pendingAudioB64 = null
-        pendingVideoB64 = null
-        isCloudWriteInFlight = true
+        isCloudAudioWriteInFlight = true
 
         val now = System.currentTimeMillis()
         val data = hashMapOf<String, Any>(
-            "seq" to streamSeq++,
-            "ts" to now
+            "seq" to audioStreamSeq++,
+            "ts" to now,
+            "audio" to audioToSend
         )
-        if (audioToSend != null) data["audio"] = audioToSend
-        if (videoToSend != null) data["video"] = videoToSend
 
         try {
             FirebaseFirestore.getInstance().collection("calls").document(callId)
-                .collection("stream").document(role)
+                .collection("stream").document("${role}_audio")
                 .set(data)
                 .addOnCompleteListener {
                     synchronized(this@CallManager) {
-                        isCloudWriteInFlight = false
-                        // If fresh audio or video arrived while previous mutation was uploading, flush immediately
-                        if (pendingAudioB64 != null || pendingVideoB64 != null) {
-                            flushPendingCloudMedia(callId, role)
+                        isCloudAudioWriteInFlight = false
+                        if (pendingAudioB64 != null) {
+                            flushPendingCloudAudio(callId, role)
                         }
                     }
                 }
         } catch (e: Exception) {
             synchronized(this@CallManager) {
-                isCloudWriteInFlight = false
+                isCloudAudioWriteInFlight = false
             }
-            Log.d(TAG, "Cloud media write error: ${e.message}")
+            Log.d(TAG, "Cloud audio write error: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun sendCloudVideo(callId: String, role: String, videoB64: String) {
+        pendingVideoB64 = videoB64
+        flushPendingCloudVideo(callId, role)
+    }
+
+    @Synchronized
+    private fun flushPendingCloudVideo(callId: String, role: String) {
+        if (isCloudVideoWriteInFlight) return
+        val videoToSend = pendingVideoB64 ?: return
+        pendingVideoB64 = null
+        isCloudVideoWriteInFlight = true
+
+        val now = System.currentTimeMillis()
+        val data = hashMapOf<String, Any>(
+            "seq" to videoStreamSeq++,
+            "ts" to now,
+            "video" to videoToSend
+        )
+
+        try {
+            FirebaseFirestore.getInstance().collection("calls").document(callId)
+                .collection("stream").document("${role}_video")
+                .set(data)
+                .addOnCompleteListener {
+                    synchronized(this@CallManager) {
+                        isCloudVideoWriteInFlight = false
+                        if (pendingVideoB64 != null) {
+                            flushPendingCloudVideo(callId, role)
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            synchronized(this@CallManager) {
+                isCloudVideoWriteInFlight = false
+            }
+            Log.d(TAG, "Cloud video write error: ${e.message}")
         }
     }
 
     private fun startCloudMediaListener(call: ActiveCall) {
-        cloudStreamListener?.remove()
+        cloudAudioListener?.remove()
+        cloudVideoListener?.remove()
+        legacyCloudStreamListener?.remove()
+
         val peerRole = if (call.isIncoming) "caller" else "callee"
         val firestore = FirebaseFirestore.getInstance()
-        var lastReceivedSeq = -1L
+        var lastAudioSeq = -1L
+        var lastVideoSeq = -1L
 
+        // 1. Dedicated Cloud Audio Stream Listener (Ultra-fast 800-byte updates, never blocked by video)
         try {
-            cloudStreamListener = firestore.collection("calls").document(call.callId)
-                .collection("stream").document(peerRole)
+            cloudAudioListener = firestore.collection("calls").document(call.callId)
+                .collection("stream").document("${peerRole}_audio")
                 .addSnapshotListener { snapshot, error ->
                     if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
                     if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
 
                     val seq = snapshot.getLong("seq") ?: -1L
-                    if (seq > lastReceivedSeq || (lastReceivedSeq - seq > 2000)) {
-                        lastReceivedSeq = seq
-
+                    if (seq > lastAudioSeq || (lastAudioSeq - seq > 2000)) {
+                        lastAudioSeq = seq
                         val audioB64 = snapshot.getString("audio")
                         if (!audioB64.isNullOrBlank()) {
                             try {
@@ -695,24 +735,72 @@ class CallManager @Inject constructor(
                                 Log.d(TAG, "Error playing cloud audio: ${e.message}")
                             }
                         }
-
-                        val videoB64 = snapshot.getString("video")
-                        if (!videoB64.isNullOrBlank()) {
-                            try {
-                                val jpegBytes = Base64.decode(videoB64, Base64.DEFAULT)
-                                val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                                if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
-                                    _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
-                                }
-                            } catch (e: Exception) {
-                                Log.d(TAG, "Error decoding cloud video: ${e.message}")
-                            }
-                        }
                     }
                 }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to attach cloud stream listener: ${e.message}")
+            Log.w(TAG, "Failed to attach cloud audio listener: ${e.message}")
         }
+
+        // 2. Dedicated Cloud Video Stream Listener (Independent frame delivery)
+        if (call.callType == CallType.VIDEO) {
+            try {
+                cloudVideoListener = firestore.collection("calls").document(call.callId)
+                    .collection("stream").document("${peerRole}_video")
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                        if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
+
+                        val seq = snapshot.getLong("seq") ?: -1L
+                        if (seq > lastVideoSeq || (lastVideoSeq - seq > 2000)) {
+                            lastVideoSeq = seq
+                            val videoB64 = snapshot.getString("video")
+                            if (!videoB64.isNullOrBlank()) {
+                                try {
+                                    val jpegBytes = Base64.decode(videoB64, Base64.DEFAULT)
+                                    val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                                    if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
+                                        _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.d(TAG, "Error decoding cloud video: ${e.message}")
+                                }
+                            }
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to attach cloud video listener: ${e.message}")
+            }
+        }
+
+        // 3. Fallback listener for legacy stream document
+        try {
+            legacyCloudStreamListener = firestore.collection("calls").document(call.callId)
+                .collection("stream").document(peerRole)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    if (_currentCall.value?.status != CallStatus.CONNECTED) return@addSnapshotListener
+
+                    val audioB64 = snapshot.getString("audio")
+                    if (!audioB64.isNullOrBlank()) {
+                        try {
+                            val muLaw = Base64.decode(audioB64, Base64.DEFAULT)
+                            val pcm = AudioVoipEngine.G711.muLawToLinear(muLaw)
+                            audioVoipEngine?.playRemoteAudio(pcm)
+                        } catch (_: Exception) {}
+                    }
+
+                    val videoB64 = snapshot.getString("video")
+                    if (!videoB64.isNullOrBlank() && call.callType == CallType.VIDEO) {
+                        try {
+                            val jpegBytes = Base64.decode(videoB64, Base64.DEFAULT)
+                            val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                            if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
+                                _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+        } catch (_: Exception) {}
     }
 
     private fun handleIncomingMeshPacket(packet: MeshPacket) {
@@ -873,12 +961,23 @@ class CallManager @Inject constructor(
         lanVoipEngine = null
 
         try {
-            cloudStreamListener?.remove()
+            cloudAudioListener?.remove()
         } catch (_: Exception) {}
-        cloudStreamListener = null
+        cloudAudioListener = null
 
-        isCloudWriteInFlight = false
+        try {
+            cloudVideoListener?.remove()
+        } catch (_: Exception) {}
+        cloudVideoListener = null
+
+        try {
+            legacyCloudStreamListener?.remove()
+        } catch (_: Exception) {}
+        legacyCloudStreamListener = null
+
+        isCloudAudioWriteInFlight = false
         pendingAudioB64 = null
+        isCloudVideoWriteInFlight = false
         pendingVideoB64 = null
 
         try {
@@ -950,12 +1049,23 @@ class CallManager @Inject constructor(
         lanVoipEngine = null
 
         try {
-            cloudStreamListener?.remove()
+            cloudAudioListener?.remove()
         } catch (_: Exception) {}
-        cloudStreamListener = null
+        cloudAudioListener = null
 
-        isCloudWriteInFlight = false
+        try {
+            cloudVideoListener?.remove()
+        } catch (_: Exception) {}
+        cloudVideoListener = null
+
+        try {
+            legacyCloudStreamListener?.remove()
+        } catch (_: Exception) {}
+        legacyCloudStreamListener = null
+
+        isCloudAudioWriteInFlight = false
         pendingAudioB64 = null
+        isCloudVideoWriteInFlight = false
         pendingVideoB64 = null
 
         try {
