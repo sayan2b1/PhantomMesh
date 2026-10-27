@@ -95,17 +95,29 @@ class ChatViewModel @Inject constructor(
         _callBlockedNotice.value = null
     }
 
+    fun getCleanPeerId(): String {
+        val myId = currentUserId.value ?: ""
+        val myName = currentUsername.value ?: ""
+        val parts = targetId.split(",").map { it.trim() }.filter { it.isNotBlank() }
+        val peer = parts.firstOrNull { 
+            !it.equals(myId, ignoreCase = true) && !it.equals(myName, ignoreCase = true) 
+        } ?: parts.firstOrNull() ?: targetId
+        return peer.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
+    }
+
     fun startVoiceCall() {
-        val targetName = getFormattedTargetName().ifBlank { targetId }
-        val result = callManager.startCall(targetName, targetId, CallType.VOICE)
+        val cleanPeer = getCleanPeerId()
+        val targetName = contactAliasManager.getAlias(cleanPeer) ?: getFormattedTargetName().ifBlank { cleanPeer }
+        val result = callManager.startCall(targetName, cleanPeer, CallType.VOICE)
         if (result is CallInitiationResult.BlockedByTransport) {
             _callBlockedNotice.value = result.reason
         }
     }
 
     fun startVideoCall() {
-        val targetName = getFormattedTargetName().ifBlank { targetId }
-        val result = callManager.startCall(targetName, targetId, CallType.VIDEO)
+        val cleanPeer = getCleanPeerId()
+        val targetName = contactAliasManager.getAlias(cleanPeer) ?: getFormattedTargetName().ifBlank { cleanPeer }
+        val result = callManager.startCall(targetName, cleanPeer, CallType.VIDEO)
         if (result is CallInitiationResult.BlockedByTransport) {
             _callBlockedNotice.value = result.reason
         }

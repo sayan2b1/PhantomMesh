@@ -1091,20 +1091,6 @@ fun ChatScreen(
             containerColor = DarkCard
         )
     }
-
-    // Active Call Overlay Screen
-    val activeCall by viewModel.currentCall.collectAsState()
-    activeCall?.let { call ->
-        CallOverlayScreen(
-            call = call,
-            onMuteToggle = { viewModel.toggleCallMute() },
-            onSpeakerToggle = { viewModel.toggleCallSpeaker() },
-            onVideoToggle = { viewModel.toggleCallVideo() },
-            onFlipCamera = { viewModel.flipCallCamera() },
-            onAccept = { viewModel.acceptIncomingCall() },
-            onEndCall = { viewModel.endCall() }
-        )
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)

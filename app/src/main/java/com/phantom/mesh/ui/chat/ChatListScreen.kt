@@ -384,15 +384,17 @@ fun ChatListScreen(
                         .weight(1f)
                 ) {
                     items(chats, key = { it.chatId }) { chat ->
-                        val rawTitle = chat.chatTitle ?: chat.participants
-                        val formattedTitle = viewModel.getFormattedDisplayName(rawTitle)
+                        val resolvedTarget = chat.participants.split(",").map { it.trim() }.firstOrNull {
+                            it.isNotBlank() && !it.equals(currentUsername, ignoreCase = true) && !it.equals(currentUserId, ignoreCase = true)
+                        } ?: (chat.chatTitle ?: chat.participants)
+                        val formattedTitle = viewModel.getFormattedDisplayName(resolvedTarget)
                         ChatItem(
                             chat = chat,
                             displayName = formattedTitle,
                             modifier = Modifier.animateItem(),
-                            onClick = { onChatClick(chat.chatId, chat.participants) },
+                            onClick = { onChatClick(chat.chatId, resolvedTarget) },
                             onLongClick = {
-                                val cleanTarget = rawTitle.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
+                                val cleanTarget = resolvedTarget.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
                                 aliasInput = viewModel.getAlias(cleanTarget) ?: ""
                                 chatForAliasEdit = chat
                             }
@@ -481,7 +483,10 @@ fun ChatListScreen(
     // Custom Contact Naming Dialog from Chat List
     if (chatForAliasEdit != null) {
         val targetChat = chatForAliasEdit!!
-        val rawUser = (targetChat.chatTitle ?: targetChat.participants)
+        val resolvedTarget = targetChat.participants.split(",").map { it.trim() }.firstOrNull {
+            it.isNotBlank() && !it.equals(currentUsername, ignoreCase = true) && !it.equals(currentUserId, ignoreCase = true)
+        } ?: (targetChat.chatTitle ?: targetChat.participants)
+        val rawUser = resolvedTarget
             .removePrefix("Peer ")
             .removePrefix("Peer-")
             .removePrefix("PEER: ")

@@ -560,12 +560,17 @@ class MeshConnectionManager @Inject constructor(
         val myUsername = sessionManager.getUsername()
         val myUserId = sessionManager.getUserId() ?: localUserId
         val cleanTarget = packet.targetId.trim().lowercase()
+        val targetTokens = cleanTarget.split(",").map { it.trim() }
+        val isTargetTokenMatch = (myUsername != null && targetTokens.contains(myUsername.trim().lowercase())) ||
+                                 (myUserId != null && targetTokens.contains(myUserId.trim().lowercase()))
+
         val isForMe = cleanTarget == myUserId?.trim()?.lowercase() ||
                       cleanTarget == localUserId?.trim()?.lowercase() ||
                       (myUsername != null && cleanTarget == myUsername.trim().lowercase()) ||
                       cleanTarget == localDisplayName.trim().lowercase() ||
                       cleanTarget == localDisplayName.substringBefore("#").trim().lowercase() ||
                       cleanTarget == "broadcast" ||
+                      isTargetTokenMatch ||
                       (routingTable.getAllConnectedEndpoints().size == 1 && fromEndpointId in routingTable.getAllConnectedEndpoints())
 
         when {

@@ -24,7 +24,8 @@ class ChatListViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val meshConnectionManager: MeshConnectionManager,
     private val routingTable: MeshRoutingTable,
-    private val contactAliasManager: ContactAliasManager
+    private val contactAliasManager: ContactAliasManager,
+    private val callManager: com.phantom.mesh.calling.CallManager
 ) : ViewModel() {
 
     val activeTransport: StateFlow<NetworkTransport> = networkStateManager.activeTransport
@@ -67,6 +68,7 @@ class ChatListViewModel @Inject constructor(
             if (userId != null) {
                 chatRepository.syncUnreadCounts(userId)
                 chatRepository.startCloudListener(userId, username)
+                callManager.startCloudCallListener(username)
                 meshConnectionManager.setLocalIdentity(userId, username)
                 meshConnectionManager.startMesh()
             }

@@ -28,6 +28,9 @@ class NotificationHelper @Inject constructor(
     companion object {
         const val CHANNEL_ID = "phantom_messages_channel"
         const val CHANNEL_NAME = "Messages"
+        const val CALLS_CHANNEL_ID = "phantom_calls_channel"
+        const val CALLS_CHANNEL_NAME = "Incoming Calls"
+        const val CALL_NOTIFICATION_ID = 8888
 
         /**
          * The chatId that is currently active on screen, if any.
@@ -60,6 +63,20 @@ class NotificationHelper @Inject constructor(
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
             notificationManager.createNotificationChannel(channel)
+
+            val callChannel = NotificationChannel(
+                CALLS_CHANNEL_ID,
+                CALLS_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Incoming voice and video call alerts"
+                enableLights(true)
+                lightColor = android.graphics.Color.GREEN
+                enableVibration(true)
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            notificationManager.createNotificationChannel(callChannel)
         }
     }
 
@@ -152,6 +169,53 @@ class NotificationHelper @Inject constructor(
             notificationManager.notify(chatId.hashCode(), builder.build())
         } catch (e: Exception) {
             android.util.Log.e("NotificationHelper", "Failed to display notification: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Displays a full-screen heads-up notification for an incoming call.
+     */
+    fun showIncomingCallNotification(
+        callerUsername: String,
+        callType: String
+    ) {
+        if (sessionManager.isDuress()) return
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            CALL_NOTIFICATION_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CALLS_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_mesh_network)
+            .setContentTitle("Incoming $callType Call")
+            .setContentText("@$callerUsername is calling...")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setOngoing(true)
+            .setContentIntent(pendingIntent)
+            .setFullScreenIntent(pendingIntent, true)
+
+        try {
+            notificationManager.notify(CALL_NOTIFICATION_ID, builder.build())
+        } catch (e: Exception) {
+            android.util.Log.e("NotificationHelper", "Failed to show call notification: ${e.message}")
+        }
+    }
+
+    fun cancelIncomingCallNotification() {
+        try {
+            notificationManager.cancel(CALL_NOTIFICATION_ID)
+        } catch (e: Exception) {
+            android.util.Log.e("NotificationHelper", "Failed to cancel call notification: ${e.message}")
         }
     }
 }
