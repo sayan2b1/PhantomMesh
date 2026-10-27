@@ -64,6 +64,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import org.webrtc.SurfaceViewRenderer
+import com.phantom.mesh.calling.webrtc.WebRtcClient
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
 import com.phantom.mesh.calling.CallTransportMode
@@ -82,6 +84,7 @@ import java.util.Locale
 @Composable
 fun CallOverlayScreen(
     call: ActiveCall,
+    webRtcClient: WebRtcClient? = null,
     onMuteToggle: () -> Unit,
     onSpeakerToggle: () -> Unit,
     onVideoToggle: () -> Unit,
@@ -128,21 +131,18 @@ fun CallOverlayScreen(
                             .background(Color(0xFF0A121D))
                             .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
                     ) {
-                        // Remote Video Stream Container (Live Frames or Connecting HUD)
-                        val remoteBmp = call.remoteVideoBitmap
-                        var imageBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
-                        if (remoteBmp != null && !remoteBmp.isRecycled) {
-                            try {
-                                imageBitmap = remoteBmp.asImageBitmap()
-                            } catch (_: Exception) {}
-                        }
-
-                        if (imageBitmap != null) {
-                            Image(
-                                bitmap = imageBitmap,
-                                contentDescription = "Remote Video Stream",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                        // Remote Video Stream Container (Live WebRTC SurfaceViewRenderer or Legacy Frames)
+                        if (webRtcClient != null) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    SurfaceViewRenderer(ctx).apply {
+                                        webRtcClient.attachRemoteRenderer(this)
+                                    }
+                                },
+                                onRelease = { renderer ->
+                                    webRtcClient.detachRemoteRenderer(renderer)
+                                },
+                                modifier = Modifier.fillMaxSize()
                             )
 
                             // Cybernetic stream badge
@@ -164,7 +164,7 @@ fun CallOverlayScreen(
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = if (call.transportMode == CallTransportMode.SAME_WIFI_LAN) "LOCAL WI-FI DIRECT (P2P LAN)" else "CLOUD RELAY STREAM",
+                                        text = "⚡ WEBRTC DIRECT (FREE P2P UDP)",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = NeonGreen,
                                         fontSize = 9.sp,
@@ -173,34 +173,79 @@ fun CallOverlayScreen(
                                 }
                             }
                         } else {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Person,
-                                    contentDescription = null,
-                                    tint = NeonCyan.copy(alpha = 0.5f),
-                                    modifier = Modifier.size(96.dp)
+                            val remoteBmp = call.remoteVideoBitmap
+                            var imageBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
+                            if (remoteBmp != null && !remoteBmp.isRecycled) {
+                                try {
+                                    imageBitmap = remoteBmp.asImageBitmap()
+                                } catch (_: Exception) {}
+                            }
+
+                            if (imageBitmap != null) {
+                                Image(
+                                    bitmap = imageBitmap,
+                                    contentDescription = "Remote Video Stream",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
                                 )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = NeonCyan.copy(alpha = 0.7f),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
-                                    letterSpacing = 1.sp
-                                )
-                                Text(
-                                    text = "Connecting Cloud & Mesh Video Engine",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextMuted,
-                                    fontSize = 9.sp
-                                )
+
+                                // Cybernetic stream badge
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(16.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(DarkBackground.copy(alpha = 0.75f))
+                                        .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(NeonGreen)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (call.transportMode == CallTransportMode.SAME_WIFI_LAN) "LOCAL WI-FI DIRECT (P2P LAN)" else "CLOUD RELAY STREAM",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = NeonGreen,
+                                            fontSize = 9.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = NeonCyan.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(96.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NeonCyan.copy(alpha = 0.7f),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        letterSpacing = 1.sp
+                                    )
+                                    Text(
+                                        text = "Connecting Cloud & Mesh Video Engine",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextMuted,
+                                        fontSize = 9.sp
+                                    )
+                                }
                             }
                         }
 
@@ -216,28 +261,42 @@ fun CallOverlayScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (call.isVideoEnabled) {
-                                AndroidView(
-                                    factory = { ctx ->
-                                        TextureView(ctx).apply {
-                                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                                                    try {
-                                                        CameraVideoEngine.attachPreview(this@apply, surface)
-                                                    } catch (_: Exception) {}
-                                                }
-                                                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
-                                                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                                                    try {
-                                                        CameraVideoEngine.detachPreview()
-                                                    } catch (_: Exception) {}
-                                                    return true
-                                                }
-                                                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+                                if (webRtcClient != null) {
+                                    AndroidView(
+                                        factory = { ctx ->
+                                            SurfaceViewRenderer(ctx).apply {
+                                                webRtcClient.attachLocalRenderer(this)
                                             }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
+                                        },
+                                        onRelease = { renderer ->
+                                            webRtcClient.detachLocalRenderer(renderer)
+                                        },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    AndroidView(
+                                        factory = { ctx ->
+                                            TextureView(ctx).apply {
+                                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                                    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                                                        try {
+                                                            CameraVideoEngine.attachPreview(this@apply, surface)
+                                                        } catch (_: Exception) {}
+                                                    }
+                                                    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
+                                                    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                                                        try {
+                                                            CameraVideoEngine.detachPreview()
+                                                        } catch (_: Exception) {}
+                                                        return true
+                                                    }
+                                                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
 
                                 Box(
                                     modifier = Modifier
@@ -307,8 +366,9 @@ fun CallOverlayScreen(
 
                         Spacer(modifier = Modifier.width(8.dp))
 
-                        // Real-Time Network Transport Badge (Local Wi-Fi LAN vs Cloud Relay vs Mesh)
+                        // Real-Time Network Transport Badge (WebRTC vs Local Wi-Fi LAN vs Cloud Relay vs Mesh)
                         val (modeText, modeColor) = when (call.transportMode) {
+                            CallTransportMode.WEBRTC_DIRECT -> Pair("⚡ WEBRTC (FREE P2P UDP)", NeonCyan)
                             CallTransportMode.SAME_WIFI_LAN -> Pair("🟢 LOCAL WI-FI (LAN <5ms)", NeonGreen)
                             CallTransportMode.CLOUD_RELAY -> Pair("☁️ CLOUD RELAY (FIREBASE)", NeonCyan)
                             CallTransportMode.BLUETOOTH_MESH -> Pair("📶 BLUETOOTH MESH", Color(0xFFFFB74D))
