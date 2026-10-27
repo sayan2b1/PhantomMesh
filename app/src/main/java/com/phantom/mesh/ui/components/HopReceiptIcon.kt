@@ -23,7 +23,8 @@ import com.phantom.mesh.ui.theme.CheckGray
 @Composable
 fun HopReceiptIcon(
     deliveryStatus: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    readReceiptsEnabled: Boolean = true
 ) {
     when (deliveryStatus) {
         "saved" -> {
@@ -36,16 +37,16 @@ fun HopReceiptIcon(
             )
         }
         "mesh_sent" -> {
-            // One Blue Check: Handed off to Mesh Router or Cloud
+            // One Check: Handed off to Mesh Router or Cloud
             Icon(
                 imageVector = Icons.Default.Check,
                 contentDescription = "Handed off to Mesh Router",
-                tint = CheckBlue,
+                tint = if (readReceiptsEnabled) CheckBlue else CheckGray,
                 modifier = modifier.size(13.dp)
             )
         }
-        "delivered", "read" -> {
-            // Two Blue Checks: Received by Target Peer (Mesh ACK bounced back)
+        "delivered" -> {
+            // Two Gray Checks: Delivered to Peer device
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = modifier
@@ -53,13 +54,36 @@ fun HopReceiptIcon(
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = null,
-                    tint = CheckBlue,
+                    tint = CheckGray,
                     modifier = Modifier.size(13.dp)
                 )
                 Icon(
                     imageVector = Icons.Default.Check,
-                    contentDescription = "Received by Target Peer",
-                    tint = CheckBlue,
+                    contentDescription = "Delivered to Target Peer",
+                    tint = CheckGray,
+                    modifier = Modifier
+                        .size(13.dp)
+                        .offset(x = (-6).dp)
+                )
+            }
+        }
+        "read" -> {
+            // Two Checks: Turns bright BLUE if read receipts are ON, stays neutral GRAY if OFF
+            val checkTint = if (readReceiptsEnabled) CheckBlue else CheckGray
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = modifier
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = checkTint,
+                    modifier = Modifier.size(13.dp)
+                )
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = if (readReceiptsEnabled) "Read by Peer" else "Delivered to Target Peer",
+                    tint = checkTint,
                     modifier = Modifier
                         .size(13.dp)
                         .offset(x = (-6).dp)

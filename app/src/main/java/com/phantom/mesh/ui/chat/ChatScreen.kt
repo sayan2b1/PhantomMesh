@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -107,6 +108,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -170,6 +172,47 @@ fun ChatScreen(
 
     val formattedTargetName = remember(viewModel.targetId, contactAliases) {
         viewModel.getFormattedTargetName()
+    }
+
+    val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsState()
+    val unreadMessageIds by viewModel.unreadMessageIds.collectAsState()
+    val senderBubbleColorHex by viewModel.senderBubbleColor.collectAsState()
+    val receiverBubbleColorHex by viewModel.receiverBubbleColor.collectAsState()
+    val chatFontStyle by viewModel.chatFontStyle.collectAsState()
+    val chatFontSizeScale by viewModel.chatFontSizeScale.collectAsState()
+
+    val senderBubbleColor = remember(senderBubbleColorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(senderBubbleColorHex))
+        } catch (_: Exception) {
+            DarkCard
+        }
+    }
+
+    val receiverBubbleColor = remember(receiverBubbleColorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(receiverBubbleColorHex))
+        } catch (_: Exception) {
+            DarkSurfaceVariant
+        }
+    }
+
+    val chatFontFamily = remember(chatFontStyle) {
+        when (chatFontStyle.uppercase()) {
+            "MONOSPACE" -> androidx.compose.ui.text.font.FontFamily.Monospace
+            "SANS_SERIF" -> androidx.compose.ui.text.font.FontFamily.SansSerif
+            "SERIF" -> androidx.compose.ui.text.font.FontFamily.Serif
+            else -> androidx.compose.ui.text.font.FontFamily.Default // "DEVICE" - adaptive to device font
+        }
+    }
+
+    val chatFontSize = remember(chatFontSizeScale) {
+        when (chatFontSizeScale.uppercase()) {
+            "SMALL" -> 13.sp
+            "LARGE" -> 17.sp
+            "EXTRA_LARGE" -> 19.sp
+            else -> 15.sp // "MEDIUM"
+        }
     }
 
     val voicePlayerManager = remember { VoicePlayerManager() }
@@ -251,10 +294,24 @@ fun ChatScreen(
         uri?.let { viewModel.setWallpaperFromUri(context, it) }
     }
 
-    // Auto-scroll to latest message automatically when new messages arrive or are sent
-    LaunchedEffect(messages.size) {
+    val oldestUnreadIndex = remember(messages, unreadMessageIds) {
+        if (unreadMessageIds.isEmpty()) -1
+        else messages.indexOfLast { unreadMessageIds.contains(it.messageId) }
+    }
+
+    // Auto-scroll to unread divider on entry, or latest message
+    var hasScrolledToUnread by remember { mutableStateOf(false) }
+    LaunchedEffect(messages.size, oldestUnreadIndex) {
         if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(0)
+            if (!hasScrolledToUnread && oldestUnreadIndex > 0) {
+                listState.animateScrollToItem(oldestUnreadIndex)
+                hasScrolledToUnread = true
+            } else if (!hasScrolledToUnread && oldestUnreadIndex == 0) {
+                listState.animateScrollToItem(0)
+                hasScrolledToUnread = true
+            } else if (hasScrolledToUnread) {
+                listState.animateScrollToItem(0)
+            }
         }
     }
 
@@ -422,14 +479,22 @@ fun ChatScreen(
                         .padding(horizontal = 16.dp),
                     reverseLayout = true // Chat style: latest messages at the bottom
                 ) {
-                    items(messages, key = { it.messageId }) { message ->
+                    itemsIndexed(messages, key = { _, message -> message.messageId }) { index, message ->
                         val isMe = message.senderId == currentUserId || 
                                    (currentUsername != null && message.senderId.equals(currentUsername, ignoreCase = true))
+                        val isUnread = unreadMessageIds.contains(message.messageId)
+
                         Box(modifier = Modifier.animateItem()) {
                             MessageBubble(
                                 message = message,
                                 isMe = isMe,
+                                isUnread = isUnread,
                                 voicePlayerManager = voicePlayerManager,
+                                senderBubbleColor = senderBubbleColor,
+                                receiverBubbleColor = receiverBubbleColor,
+                                fontFamily = chatFontFamily,
+                                fontSize = chatFontSize,
+                                readReceiptsEnabled = readReceiptsEnabled,
                                 onLongClick = {
                                     if (message.content != "🚫 This message was deleted" && message.dataType != "deleted") {
                                         selectedMessageForDelete = message
@@ -437,7 +502,15 @@ fun ChatScreen(
                                 }
                             )
                         }
-                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // In reverseLayout = true, rendering after the oldest unread index places the divider ABOVE it
+                        if (index == oldestUnreadIndex && unreadMessageIds.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            UnreadMessagesDivider(count = unreadMessageIds.size)
+                            Spacer(modifier = Modifier.height(6.dp))
+                        } else {
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
                     }
                 }
 
@@ -844,7 +917,13 @@ fun ChatScreen(
 fun MessageBubble(
     message: MessageEntity,
     isMe: Boolean,
+    isUnread: Boolean = false,
     voicePlayerManager: VoicePlayerManager,
+    senderBubbleColor: Color = DarkCard,
+    receiverBubbleColor: Color = DarkSurfaceVariant,
+    fontFamily: androidx.compose.ui.text.font.FontFamily = androidx.compose.ui.text.font.FontFamily.Default,
+    fontSize: androidx.compose.ui.unit.TextUnit = 15.sp,
+    readReceiptsEnabled: Boolean = true,
     onLongClick: () -> Unit = {}
 ) {
     val timeFormatted = remember(message.timestamp) {
@@ -871,10 +950,11 @@ fun MessageBubble(
                             bottomEnd = if (isMe) 4.dp else 16.dp
                         )
                     )
-                    .background(if (isMe) DarkCard else DarkSurfaceVariant)
+                    .background(if (isMe) senderBubbleColor else receiverBubbleColor)
                     .border(
-                        1.dp,
+                        if (isUnread && !isMe) 1.5.dp else 1.dp,
                         if (isDeleted) Color.White.copy(alpha = 0.05f)
+                        else if (isUnread && !isMe) NeonCyan.copy(alpha = 0.8f)
                         else if (isMe) NeonCyan.copy(alpha = 0.3f)
                         else Color.White.copy(alpha = 0.1f),
                         RoundedCornerShape(
@@ -998,7 +1078,10 @@ fun MessageBubble(
                             } else {
                                 Text(
                                     text = message.content ?: "",
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontFamily = fontFamily,
+                                        fontSize = fontSize
+                                    ),
                                     color = TextPrimary
                                 )
                             }
@@ -1021,6 +1104,25 @@ fun MessageBubble(
 
                         Spacer(modifier = Modifier.width(6.dp))
 
+                        if (isUnread && !isMe) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(NeonCyan.copy(alpha = 0.2f))
+                                    .border(0.5.dp, NeonCyan, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                            ) {
+                                Text(
+                                    text = "NEW",
+                                    color = NeonCyan,
+                                    fontSize = 8.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
                         // Timestamp
                         Text(
                             text = timeFormatted,
@@ -1031,11 +1133,49 @@ fun MessageBubble(
                         if (isMe) {
                             Spacer(modifier = Modifier.width(4.dp))
                             // HOP-STATE READ RECEIPTS (1 gray, 1 blue, 2 blue)
-                            HopReceiptIcon(deliveryStatus = message.deliveryStatus)
+                            HopReceiptIcon(
+                                deliveryStatus = message.deliveryStatus,
+                                readReceiptsEnabled = readReceiptsEnabled
+                            )
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun UnreadMessagesDivider(count: Int) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(DarkSurfaceVariant.copy(alpha = 0.95f))
+                .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                .padding(horizontal = 14.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(NeonCyan)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "$count UNREAD MESSAGE${if (count > 1) "S" else ""}",
+                color = NeonCyan,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                letterSpacing = 1.sp
+            )
         }
     }
 }

@@ -67,8 +67,12 @@ class ChatRepository @Inject constructor(
         scope.launch {
             meshConnectionManager.incomingAcks.collect { ackPacket ->
                 ackPacket.refMessageId?.let { originalMessageId ->
-                    // Two blue checks = delivered
-                    messageDao.updateDeliveryStatus(originalMessageId, "delivered")
+                    val status = if (ackPacket.data == "read") "read" else "delivered"
+                    if (ackPacket.data == "read") {
+                        val currentUserId = sessionManager.getUserId() ?: ""
+                        messageDao.markChatMessagesAsReadByPeer(currentUserId, ackPacket.senderId)
+                    }
+                    messageDao.updateDeliveryStatus(originalMessageId, status)
                 }
             }
         }
@@ -89,6 +93,38 @@ class ChatRepository @Inject constructor(
     fun observeActiveChats(): Flow<List<ChatEntity>> = chatDao.observeActiveChats()
 
     fun observeMessages(chatId: String): Flow<List<MessageEntity>> = messageDao.observeMessages(chatId)
+
+    suspend fun clearUnread(chatId: String) = withContext(Dispatchers.IO) {
+        chatDao.clearUnread(chatId)
+    }
+
+    suspend fun getUnreadMessageIds(chatId: String, currentUserId: String): List<String> = withContext(Dispatchers.IO) {
+        messageDao.getUnreadMessageIds(chatId, currentUserId)
+    }
+
+    suspend fun markChatAsRead(chatId: String, currentUserId: String, sendReadReceipt: Boolean = true) = withContext(Dispatchers.IO) {
+        chatDao.clearUnread(chatId)
+        if (sendReadReceipt) {
+            messageDao.markIncomingMessagesAsRead(chatId, currentUserId)
+            try {
+                val chat = chatDao.getChatById(chatId)
+                val peerId = chat?.participants?.split(",")?.firstOrNull { it.isNotBlank() && it != currentUserId }
+                if (peerId != null) {
+                    val readAck = com.phantom.mesh.mesh.MeshPacket(
+                        packetId = "read_ack_${System.currentTimeMillis()}",
+                        senderId = currentUserId,
+                        targetId = peerId,
+                        data = "read",
+                        dataType = "ack",
+                        refMessageId = chatId
+                    )
+                    meshConnectionManager.sendPacket(readAck)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("ChatRepository", "Failed to dispatch read receipt ACK: ${e.message}")
+            }
+        }
+    }
 
     // ── Sending Messages (Dual-Network Router) ─────────────────────────────
 
