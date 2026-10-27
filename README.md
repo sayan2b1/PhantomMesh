@@ -21,6 +21,23 @@
 - **Dynamic Routing Table**: Automatic peer identity discovery, reachability advertisements, and 1-to-1 routing fallbacks.
 - **Priority Data Queue**: Text and control packets (ACK, identity, deletion) transmit instantly, while high-volume media payloads queue for high-bandwidth links.
 
+### 📞 VoIP Voice & Video Calling Engine
+- **Voice Calling Across All Networks**: Low-bandwidth VoIP voice calling is fully operational across **all networks (Bluetooth Mesh, Wi-Fi Direct, and Cloud)** without requiring cellular towers or internet.
+- **Video Calling**: High-throughput video streaming authorized over **Wi-Fi Direct and Cloud** connections with intelligent transport bandwidth gating.
+- **In-Call Overlay & Controls**: Full-screen calling UI with animated audio wave pulses, speakerphone toggle, microphone mute, camera flipper, and active call duration timer.
+
+### 💬 Swipe-to-Reply & Quoted Context
+- **Fluid Gesture Control**: Swipe right on any message bubble with a smooth spring animation and haptic vibration feedback.
+- **Quoted Message Context**: Displays an active reply preview bar above the input box and embeds the quoted sender and snippet inside the sent message bubble.
+
+### 🔊 WhatsApp-Style Instant Audio Feedback
+- **Zero-Latency Synthetic PCM**: Pure synthesized audio tones for outgoing message "pop", incoming message chime, and call ringtones without external asset overhead.
+
+### 🔐 Account Recovery via 30 Deep Security Questions
+- **Introspective Security Questions**: 30 complex, thoughtful questions during user registration that cannot be easily guessed by acquaintances.
+- **PBKDF2 Cryptographic Hashing**: Security question answers are salted and hashed client-side using PBKDF2 with SHA-256 (10,000 iterations).
+- **Two-Step Password Reset**: Seamless forgot password dialog with answer verification and instant password update.
+
 ### 🔄 Dual-Engine Hybrid Cloud & Mesh Handoff
 - **Automatic Fallback**: Transparently switches between Firebase (Firestore / Firebase Storage) when internet is active and Nearby Connections P2P Mesh when offline.
 - **Delivery Receipts**: Single check (saved/queued), double check (mesh sent / cloud delivered), and blue checks (read/peer ACK confirmed).

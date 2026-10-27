@@ -136,12 +136,22 @@ class AuthRepository @Inject constructor(
     /**
      * Registers a new anonymous user identity.
      */
-    suspend fun register(username: String, password: String, decoyPassword: String? = null): AuthResult = withContext(Dispatchers.IO) {
+    suspend fun register(
+        username: String,
+        password: String,
+        decoyPassword: String? = null,
+        securityQuestion: String? = null,
+        securityAnswer: String? = null
+    ): AuthResult = withContext(Dispatchers.IO) {
         val cleanUsername = username.trim().lowercase()
         val isOnline = networkStateManager.isInternetAvailable.value
 
         val decoyHash = if (!decoyPassword.isNullOrBlank()) {
             CryptoUtil.hashPassword(decoyPassword)
+        } else null
+
+        val answerHash = if (!securityQuestion.isNullOrBlank() && !securityAnswer.isNullOrBlank()) {
+            CryptoUtil.hashPassword(securityAnswer.trim().lowercase())
         } else null
 
         if (isOnline) {
@@ -158,9 +168,27 @@ class AuthRepository @Inject constructor(
                         decoyPasswordHash = decoyHash,
                         displayName = cleanUsername,
                         firebaseToken = cloudResponse.token,
-                        lastActive = System.currentTimeMillis()
+                        lastActive = System.currentTimeMillis(),
+                        securityQuestion = securityQuestion?.takeIf { it.isNotBlank() },
+                        securityAnswerHash = answerHash
                     )
                     userDao.insertUser(newUser)
+
+                    try {
+                        com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                            .collection("users")
+                            .document(cloudResponse.userId)
+                            .set(mapOf(
+                                "userId" to cloudResponse.userId,
+                                "username" to cleanUsername,
+                                "securityQuestion" to securityQuestion,
+                                "securityAnswerHash" to answerHash,
+                                "lastActive" to System.currentTimeMillis()
+                            ), com.google.firebase.firestore.SetOptions.merge())
+                    } catch (e: Exception) {
+                        android.util.Log.w("AuthRepository", "Failed to sync user recovery data to cloud: ${e.message}")
+                    }
+
                     sessionManager.saveSession(cloudResponse.userId, cleanUsername, cloudResponse.token, isDuress = false)
                     meshConnectionManager.setLocalIdentity(cloudResponse.userId, cleanUsername)
                     meshConnectionManager.startMesh()
@@ -183,7 +211,9 @@ class AuthRepository @Inject constructor(
                 decoyPasswordHash = decoyHash,
                 displayName = cleanUsername,
                 firebaseToken = null,
-                lastActive = System.currentTimeMillis()
+                lastActive = System.currentTimeMillis(),
+                securityQuestion = securityQuestion?.takeIf { it.isNotBlank() },
+                securityAnswerHash = answerHash
             )
             userDao.insertUser(newUser)
             sessionManager.saveSession(offlineUserId, cleanUsername, null, isDuress = false)
@@ -192,6 +222,123 @@ class AuthRepository @Inject constructor(
 
             return@withContext AuthResult.Success(offlineUserId, cleanUsername, isDuress = false)
         }
+    }
+
+    suspend fun getSecurityQuestionForUsername(username: String): String? = withContext(Dispatchers.IO) {
+        val cleanUsername = username.trim().lowercase()
+        val localUser = userDao.getUserByUsername(cleanUsername)
+        if (localUser?.securityQuestion != null) {
+            return@withContext localUser.securityQuestion
+        }
+        try {
+            if (networkStateManager.isInternetAvailable.value) {
+                val snapshot = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    .collection("users")
+                    .whereEqualTo("username", cleanUsername)
+                    .limit(1)
+                    .get()
+                    .await()
+                if (!snapshot.isEmpty) {
+                    val doc = snapshot.documents.first()
+                    return@withContext doc.getString("securityQuestion")
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("AuthRepository", "Error fetching cloud security question: ${e.message}")
+        }
+        null
+    }
+
+    suspend fun resetPasswordWithSecurityAnswer(
+        username: String,
+        securityAnswer: String,
+        newPassword: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val cleanUsername = username.trim().lowercase()
+        if (newPassword.length < 6) {
+            return@withContext Result.failure(Exception("New password must be at least 6 characters"))
+        }
+
+        var user = userDao.getUserByUsername(cleanUsername)
+        var storedAnswerHash = user?.securityAnswerHash
+        var userId = user?.userId
+
+        if (storedAnswerHash == null && networkStateManager.isInternetAvailable.value) {
+            try {
+                val snapshot = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    .collection("users")
+                    .whereEqualTo("username", cleanUsername)
+                    .limit(1)
+                    .get()
+                    .await()
+                if (!snapshot.isEmpty) {
+                    val doc = snapshot.documents.first()
+                    storedAnswerHash = doc.getString("securityAnswerHash")
+                    userId = doc.getString("userId") ?: doc.id
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("AuthRepository", "Error fetching cloud user for reset: ${e.message}")
+            }
+        }
+
+        if (storedAnswerHash == null) {
+            return@withContext Result.failure(Exception("No recovery question configured for @$cleanUsername"))
+        }
+
+        val isValid = CryptoUtil.verifyPassword(securityAnswer.trim().lowercase(), storedAnswerHash)
+        if (!isValid) {
+            return@withContext Result.failure(Exception("Incorrect answer to security recovery question"))
+        }
+
+        val newPasswordHash = CryptoUtil.hashPassword(newPassword)
+        userDao.updatePasswordHashByUsername(cleanUsername, newPasswordHash)
+
+        if (userId != null) {
+            sessionManager.saveSession(userId, cleanUsername, null, isDuress = false)
+            meshConnectionManager.setLocalIdentity(userId, cleanUsername)
+        }
+
+        try {
+            if (networkStateManager.isInternetAvailable.value && userId != null) {
+                com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    .collection("users")
+                    .document(userId)
+                    .update("passwordHash", newPasswordHash)
+                    .await()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("AuthRepository", "Cloud password reset sync warning: ${e.message}")
+        }
+
+        Result.success(Unit)
+    }
+
+    suspend fun updateSecurityQuestion(
+        userId: String,
+        question: String,
+        answer: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        if (question.isBlank() || answer.isBlank()) {
+            return@withContext Result.failure(Exception("Question and answer cannot be blank"))
+        }
+        val answerHash = CryptoUtil.hashPassword(answer.trim().lowercase())
+        userDao.updateSecurityQuestion(userId, question, answerHash)
+
+        try {
+            if (networkStateManager.isInternetAvailable.value) {
+                com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    .collection("users")
+                    .document(userId)
+                    .update(mapOf(
+                        "securityQuestion" to question,
+                        "securityAnswerHash" to answerHash
+                    ))
+                    .await()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("AuthRepository", "Cloud security question update warning: ${e.message}")
+        }
+        Result.success(Unit)
     }
 
     /**

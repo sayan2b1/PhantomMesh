@@ -126,6 +126,20 @@ class ChatRepository @Inject constructor(
         }
     }
 
+    suspend fun syncUnreadCounts(currentUserId: String) = withContext(Dispatchers.IO) {
+        try {
+            val chats = chatDao.getAllChats()
+            for (chat in chats) {
+                val realCount = messageDao.countUnreadInChat(chat.chatId, currentUserId)
+                if (chat.unreadCount != realCount) {
+                    chatDao.updateChat(chat.copy(unreadCount = realCount))
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("ChatRepository", "Failed to sync unread counts: ${e.message}")
+        }
+    }
+
     // ── Sending Messages (Dual-Network Router) ─────────────────────────────
 
     /**
@@ -138,7 +152,14 @@ class ChatRepository @Inject constructor(
      *      Status updates to 'mesh_sent' (1 blue check).
      *      Target peer will bounce an ACK packet back -> updates to 'delivered' (2 blue checks).
      */
-    suspend fun sendTextMessage(chatId: String, targetId: String, content: String): MessageEntity = withContext(Dispatchers.IO) {
+    suspend fun sendTextMessage(
+        chatId: String,
+        targetId: String,
+        content: String,
+        replyToMessageId: String? = null,
+        replyToContent: String? = null,
+        replyToSender: String? = null
+    ): MessageEntity = withContext(Dispatchers.IO) {
         val currentUserId = sessionManager.getUserId() ?: "anon_sender"
         val messageId = "msg_${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
@@ -162,7 +183,10 @@ class ChatRepository @Inject constructor(
             deliveryStatus = "saved",
             hopCount = 0,
             transportUsed = if (isOnline) "cloud" else "mesh",
-            timestamp = now
+            timestamp = now,
+            replyToMessageId = replyToMessageId,
+            replyToContent = replyToContent,
+            replyToSender = replyToSender
         )
         try {
             messageDao.insertMessage(message)
@@ -556,7 +580,10 @@ class ChatRepository @Inject constructor(
                 "mediaCloudUrl" to message.mediaCloudUrl,
                 "mimeType" to (message.mimeType ?: "image/jpeg"),
                 "mediaSizeBytes" to message.mediaSizeBytes,
-                "timestamp" to message.timestamp
+                "timestamp" to message.timestamp,
+                "replyToMessageId" to message.replyToMessageId,
+                "replyToContent" to message.replyToContent,
+                "replyToSender" to message.replyToSender
             )
 
             android.util.Log.d("ChatRepository", "Writing message to Firestore: chatId=${message.chatId}, targetId=$targetUsername, messageId=${message.messageId}")
@@ -660,7 +687,10 @@ class ChatRepository @Inject constructor(
                 data = packetData ?: "",
                 dataType = message.dataType,
                 hopCount = 0,
-                payloadSize = message.mediaSizeBytes
+                payloadSize = message.mediaSizeBytes,
+                replyToMessageId = message.replyToMessageId,
+                replyToContent = message.replyToContent,
+                replyToSender = message.replyToSender
             )
 
             // Hand off to Nearby Connections mesh router (1 blue check: 'mesh_sent')
@@ -777,7 +807,10 @@ class ChatRepository @Inject constructor(
             deliveryStatus = "delivered", // Already delivered to this target device
             hopCount = packet.hopCount,
             transportUsed = "mesh",
-            timestamp = packet.timestamp
+            timestamp = packet.timestamp,
+            replyToMessageId = packet.replyToMessageId,
+            replyToContent = packet.replyToContent,
+            replyToSender = packet.replyToSender
         )
 
         try {
@@ -937,7 +970,10 @@ class ChatRepository @Inject constructor(
                                 deliveryStatus = "delivered",
                                 hopCount = 0,
                                 transportUsed = "cloud",
-                                timestamp = timestamp
+                                timestamp = timestamp,
+                                replyToMessageId = doc.getString("replyToMessageId"),
+                                replyToContent = doc.getString("replyToContent"),
+                                replyToSender = doc.getString("replyToSender")
                             )
                             try {
                                 messageDao.insertMessage(msg)
@@ -1076,7 +1112,10 @@ class ChatRepository @Inject constructor(
                                     deliveryStatus = "delivered",
                                     hopCount = 0,
                                     transportUsed = "cloud",
-                                    timestamp = timestamp
+                                    timestamp = timestamp,
+                                    replyToMessageId = doc.getString("replyToMessageId"),
+                                    replyToContent = doc.getString("replyToContent"),
+                                    replyToSender = doc.getString("replyToSender")
                                 )
                                 messageDao.insertMessage(msg)
                                 chatDao.incrementUnread(chatId)

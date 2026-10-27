@@ -49,5 +49,13 @@ data class UserEntity(
     val lastActive: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "created_at")
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+
+    /** Optional security recovery question selected by the user */
+    @ColumnInfo(name = "security_question")
+    val securityQuestion: String? = null,
+
+    /** PBKDF2/SHA-256 hash of the user's secret answer for password recovery */
+    @ColumnInfo(name = "security_answer_hash")
+    val securityAnswerHash: String? = null
 )

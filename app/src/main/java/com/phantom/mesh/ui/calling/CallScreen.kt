@@ -1,0 +1,441 @@
+package com.phantom.mesh.ui.calling
+
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.phantom.mesh.calling.ActiveCall
+import com.phantom.mesh.calling.CallStatus
+import com.phantom.mesh.calling.CallType
+import com.phantom.mesh.ui.theme.DarkBackground
+import com.phantom.mesh.ui.theme.DarkCard
+import com.phantom.mesh.ui.theme.DuressCrimson
+import com.phantom.mesh.ui.theme.NeonCyan
+import com.phantom.mesh.ui.theme.NeonGreen
+import com.phantom.mesh.ui.theme.TextMuted
+import com.phantom.mesh.ui.theme.TextPrimary
+import com.phantom.mesh.ui.theme.TextSecondary
+import java.util.Locale
+
+@Composable
+fun CallOverlayScreen(
+    call: ActiveCall,
+    onMuteToggle: () -> Unit,
+    onSpeakerToggle: () -> Unit,
+    onVideoToggle: () -> Unit,
+    onFlipCamera: () -> Unit,
+    onAccept: () -> Unit,
+    onEndCall: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = { /* Prevent accidental dismissal during active call */ },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = DarkBackground
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFF070B12),
+                                DarkBackground,
+                                Color(0xFF03070C)
+                            )
+                        )
+                    )
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(24.dp)
+            ) {
+                // Background Cybernetic Grid / Video Feed Container
+                if (call.callType == CallType.VIDEO && call.status == CallStatus.CONNECTED) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF0A121D))
+                            .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
+                    ) {
+                        // Remote Video Stream Simulation HUD
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = NeonCyan.copy(alpha = 0.5f),
+                                modifier = Modifier.size(96.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "ENCRYPTED HIGH-BANDWIDTH VIDEO FEED",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NeonCyan.copy(alpha = 0.7f),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = "1080p @ 30fps (Hardware H.264 / Wi-Fi / Cloud)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted,
+                                fontSize = 9.sp
+                            )
+                        }
+
+                        // Local Camera PiP (Picture in Picture)
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(16.dp)
+                                .size(width = 100.dp, height = 140.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(DarkCard)
+                                .border(1.5.dp, NeonGreen.copy(alpha = 0.6f), RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (call.isVideoEnabled) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = NeonGreen,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                    Text(
+                                        text = if (call.isFrontCamera) "FRONT CAM" else "BACK CAM",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NeonGreen,
+                                        fontSize = 8.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = "CAM OFF",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = DuressCrimson,
+                                    fontSize = 9.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Top Header Info
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(DarkCard.copy(alpha = 0.8f))
+                            .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (call.callType == CallType.VIDEO) "E2EE VIDEO CALL (HIGH BANDWIDTH)" else "E2EE VOICE CALL",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NeonCyan,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "@${call.peerUsername}",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    val statusText = when (call.status) {
+                        CallStatus.OUTGOING_CALLING -> "Calling..."
+                        CallStatus.INCOMING_RINGING -> "Incoming Call..."
+                        CallStatus.CONNECTED -> {
+                            val minutes = call.durationSeconds / 60
+                            val seconds = call.durationSeconds % 60
+                            String.format(Locale.US, "%02d:%02d", minutes, seconds)
+                        }
+                        CallStatus.ENDED -> "Call Ended"
+                        CallStatus.IDLE -> ""
+                    }
+
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (call.status == CallStatus.CONNECTED) NeonGreen else TextSecondary,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                // Center Avatar with pulsing rings for Voice Call
+                if (call.callType == CallType.VOICE || call.status != CallStatus.CONNECTED) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(240.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // Pulsing outer ripple when connected or calling
+                        if (call.status == CallStatus.CONNECTED || call.status == CallStatus.OUTGOING_CALLING || call.status == CallStatus.INCOMING_RINGING) {
+                            val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                            val pulseScale by infiniteTransition.animateFloat(
+                                initialValue = 1.0f,
+                                targetValue = 1.35f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(1200, easing = FastOutSlowInEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                ),
+                                label = "scale"
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .size(170.dp)
+                                    .scale(pulseScale)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (call.status == CallStatus.INCOMING_RINGING)
+                                            NeonGreen.copy(alpha = 0.15f)
+                                        else
+                                            NeonCyan.copy(alpha = 0.15f)
+                                    )
+                            )
+                        }
+
+                        // Inner Avatar
+                        Box(
+                            modifier = Modifier
+                                .size(130.dp)
+                                .clip(CircleShape)
+                                .background(DarkCard)
+                                .border(
+                                    width = 2.dp,
+                                    color = if (call.status == CallStatus.CONNECTED) NeonGreen else NeonCyan,
+                                    shape = CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = if (call.status == CallStatus.CONNECTED) NeonGreen else NeonCyan,
+                                modifier = Modifier.size(64.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Bottom Call Control Actions
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Answer or Reject for incoming ringing
+                    if (call.status == CallStatus.INCOMING_RINGING) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Decline (Red)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .clip(CircleShape)
+                                        .background(DuressCrimson)
+                                        .clickable { onEndCall() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Decline Call",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Decline", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
+                            }
+
+                            // Accept (Green)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .clip(CircleShape)
+                                        .background(NeonGreen)
+                                        .clickable { onAccept() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Phone,
+                                        contentDescription = "Accept Call",
+                                        tint = DarkBackground,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Accept", color = NeonGreen, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    } else {
+                        // Controls for Active Call
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(32.dp))
+                                .background(DarkCard.copy(alpha = 0.9f))
+                                .border(1.dp, NeonCyan.copy(alpha = 0.2f), RoundedCornerShape(32.dp))
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Mic Mute Toggle
+                            IconButton(onClick = onMuteToggle) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = "Mute",
+                                    tint = if (call.isMuted) DuressCrimson else NeonCyan,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+
+                            // Speakerphone Toggle
+                            IconButton(onClick = onSpeakerToggle) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Speaker",
+                                    tint = if (call.isSpeakerOn) NeonGreen else TextSecondary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+
+                            // Video Controls (if video call)
+                            if (call.callType == CallType.VIDEO) {
+                                IconButton(onClick = onVideoToggle) {
+                                    Icon(
+                                        imageVector = Icons.Default.VideoLibrary,
+                                        contentDescription = "Toggle Video",
+                                        tint = if (call.isVideoEnabled) NeonGreen else TextMuted,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+
+                                IconButton(onClick = onFlipCamera) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Flip Camera",
+                                        tint = NeonCyan,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+
+                            // End Call (Hang Up)
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(DuressCrimson)
+                                    .clickable { onEndCall() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "End Call",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+}

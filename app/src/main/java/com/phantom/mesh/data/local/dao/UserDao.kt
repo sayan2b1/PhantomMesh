@@ -32,6 +32,12 @@ interface UserDao {
     @Query("UPDATE users SET password_hash = :hash WHERE user_id = :userId")
     suspend fun updatePasswordHash(userId: String, hash: String)
 
+    @Query("UPDATE users SET password_hash = :hash WHERE username = :username COLLATE NOCASE")
+    suspend fun updatePasswordHashByUsername(username: String, hash: String)
+
+    @Query("UPDATE users SET security_question = :question, security_answer_hash = :answerHash WHERE user_id = :userId")
+    suspend fun updateSecurityQuestion(userId: String, question: String, answerHash: String)
+
     @Query("UPDATE users SET username = :newUsername, display_name = :newUsername WHERE user_id = :userId")
     suspend fun updateUsername(userId: String, newUsername: String)
 
