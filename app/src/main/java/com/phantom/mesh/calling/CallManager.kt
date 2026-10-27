@@ -12,6 +12,8 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.gson.Gson
+import com.phantom.mesh.calling.webrtc.WebRtcClient
+import com.phantom.mesh.calling.webrtc.WebRtcSignalingManager
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshPacket
@@ -50,6 +52,7 @@ enum class CallStatus {
 }
 
 enum class CallTransportMode {
+    WEBRTC_DIRECT,   // High-fidelity WebRTC P2P (UDP/STUN, 48kHz Opus, hardware VP8/H.264)
     SAME_WIFI_LAN,   // Direct P2P UDP over local Wi-Fi router (<5ms latency)
     CLOUD_RELAY,     // Real-time media streaming via Firebase (Cross-network: Wi-Fi to Cellular)
     BLUETOOTH_MESH   // Offline Nearby Connections mesh P2P
@@ -69,7 +72,7 @@ data class ActiveCall(
     val isVideoEnabled: Boolean = true,
     val isFrontCamera: Boolean = true,
     val remoteVideoBitmap: Bitmap? = null,
-    val transportMode: CallTransportMode = CallTransportMode.CLOUD_RELAY
+    val transportMode: CallTransportMode = CallTransportMode.WEBRTC_DIRECT
 )
 
 sealed class CallInitiationResult {
@@ -101,6 +104,10 @@ class CallManager @Inject constructor(
 
     private val _currentCall = MutableStateFlow<ActiveCall?>(null)
     val currentCall: StateFlow<ActiveCall?> = _currentCall.asStateFlow()
+
+    var webRtcClient: WebRtcClient? = null
+        private set
+    private var webRtcSignaling: WebRtcSignalingManager? = null
 
     private var myNetworkProfile: NetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
     private var peerNetworkProfile: NetworkProfile? = null
@@ -304,7 +311,7 @@ class CallManager @Inject constructor(
         myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
 
         val callId = UUID.randomUUID().toString()
-        val initialMode = if (networkStateManager.isInternetAvailable.value) CallTransportMode.CLOUD_RELAY else CallTransportMode.BLUETOOTH_MESH
+        val initialMode = if (networkStateManager.isInternetAvailable.value) CallTransportMode.WEBRTC_DIRECT else CallTransportMode.BLUETOOTH_MESH
 
         val call = ActiveCall(
             callId = callId,
@@ -322,7 +329,28 @@ class CallManager @Inject constructor(
         SoundEffectManager.startOutgoingRingtone()
 
         audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-        audioVoipEngine?.setSpeakerOn(true)
+
+        // Initialize WebRTC for outgoing call
+        try {
+            webRtcClient?.close()
+            val rtcClient = WebRtcClient(context)
+            webRtcClient = rtcClient
+
+            webRtcSignaling?.stop()
+            val signaling = WebRtcSignalingManager(
+                callId = callId,
+                isCaller = true,
+                peerAddress = cleanTargetAddress,
+                webRtcClient = rtcClient,
+                meshConnectionManagerProvider = meshConnectionManagerProvider,
+                sessionManager = sessionManager
+            )
+            webRtcSignaling = signaling
+            signaling.start()
+            rtcClient.start(isCaller = true, isVideo = callType == CallType.VIDEO)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed initializing WebRTC for outgoing call: ${e.message}", e)
+        }
 
         // 1. Signal call offer over Cloud Firestore
         try {
@@ -395,10 +423,10 @@ class CallManager @Inject constructor(
         peerNetworkProfile = peerNet
 
         val isSameWifi = peerNet != null && LocalNetworkDetector.isSameWifiNetwork(myNetworkProfile, peerNet)
-        val mode = if (isSameWifi) {
+        val mode = if (networkStateManager.isInternetAvailable.value) {
+            CallTransportMode.WEBRTC_DIRECT
+        } else if (isSameWifi) {
             CallTransportMode.SAME_WIFI_LAN
-        } else if (networkStateManager.isInternetAvailable.value) {
-            CallTransportMode.CLOUD_RELAY
         } else {
             CallTransportMode.BLUETOOTH_MESH
         }
@@ -435,6 +463,28 @@ class CallManager @Inject constructor(
         if (call.status == CallStatus.INCOMING_RINGING) {
             notificationHelperProvider.get().cancelIncomingCallNotification()
             SoundEffectManager.stopRingtone()
+
+            // Initialize WebRTC for incoming call
+            try {
+                webRtcClient?.close()
+                val rtcClient = WebRtcClient(context)
+                webRtcClient = rtcClient
+
+                webRtcSignaling?.stop()
+                val signaling = WebRtcSignalingManager(
+                    callId = call.callId,
+                    isCaller = false,
+                    peerAddress = call.peerAddress,
+                    webRtcClient = rtcClient,
+                    meshConnectionManagerProvider = meshConnectionManagerProvider,
+                    sessionManager = sessionManager
+                )
+                webRtcSignaling = signaling
+                signaling.start()
+                rtcClient.start(isCaller = false, isVideo = call.callType == CallType.VIDEO)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed initializing WebRTC for incoming call: ${e.message}", e)
+            }
 
             // Immediately transition local call status to CONNECTED so it cannot be falsely cancelled
             val now = System.currentTimeMillis()
@@ -486,10 +536,10 @@ class CallManager @Inject constructor(
         myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
         val peerNet = peerNetworkProfile
         val isSameWifi = peerNet != null && LocalNetworkDetector.isSameWifiNetwork(myNetworkProfile, peerNet)
-        val mode = if (isSameWifi) {
+        val mode = if (networkStateManager.isInternetAvailable.value) {
+            CallTransportMode.WEBRTC_DIRECT
+        } else if (isSameWifi) {
             CallTransportMode.SAME_WIFI_LAN
-        } else if (networkStateManager.isInternetAvailable.value) {
-            CallTransportMode.CLOUD_RELAY
         } else {
             CallTransportMode.BLUETOOTH_MESH
         }
@@ -513,6 +563,12 @@ class CallManager @Inject constructor(
                     current.copy(durationSeconds = current.durationSeconds + 1)
                 }
             }
+        }
+
+        // WebRTC P2P direct UDP media handles all audio/video when active
+        if (webRtcClient != null) {
+            Log.i(TAG, "WebRTC active: hardware audio & video streaming directly via P2P UDP")
+            return
         }
 
         // Mode 1: SAME_WIFI_LAN direct P2P UDP engine (<5ms, zero data)
@@ -858,6 +914,9 @@ class CallManager @Inject constructor(
                     }
                 }
             }
+            "webrtc_sdp", "webrtc_ice" -> {
+                webRtcSignaling?.handleIncomingMeshPacket(packet)
+            }
             "call_audio" -> {
                 if (_currentCall.value?.status == CallStatus.CONNECTED) {
                     try {
@@ -892,6 +951,7 @@ class CallManager @Inject constructor(
             val nextState = !it.isMuted
             audioManager?.isMicrophoneMute = nextState
             audioVoipEngine?.setMuted(nextState)
+            webRtcClient?.setMuted(nextState)
             it.copy(isMuted = nextState)
         }
     }
@@ -904,6 +964,7 @@ class CallManager @Inject constructor(
             val nextState = !it.isSpeakerOn
             audioManager?.isSpeakerphoneOn = nextState
             audioVoipEngine?.setSpeakerOn(nextState)
+            webRtcClient?.setSpeakerOn(nextState)
             it.copy(isSpeakerOn = nextState)
         }
     }
@@ -914,10 +975,14 @@ class CallManager @Inject constructor(
     fun toggleVideo() {
         _currentCall.value = _currentCall.value?.let { current ->
             val nextEnabled = !current.isVideoEnabled
-            if (!nextEnabled) {
-                CameraVideoEngine.stop()
+            if (webRtcClient != null) {
+                webRtcClient?.setVideoEnabled(nextEnabled)
             } else {
-                startVideoStream(current, current.transportMode)
+                if (!nextEnabled) {
+                    CameraVideoEngine.stop()
+                } else {
+                    startVideoStream(current, current.transportMode)
+                }
             }
             current.copy(isVideoEnabled = nextEnabled)
         }
@@ -929,7 +994,11 @@ class CallManager @Inject constructor(
     fun flipCamera() {
         _currentCall.value = _currentCall.value?.let { current ->
             val nextFront = !current.isFrontCamera
-            CameraVideoEngine.switchCamera(context, nextFront)
+            if (webRtcClient != null) {
+                webRtcClient?.switchCamera()
+            } else {
+                CameraVideoEngine.switchCamera(context, nextFront)
+            }
             current.copy(isFrontCamera = nextFront)
         }
     }
@@ -945,6 +1014,16 @@ class CallManager @Inject constructor(
         SoundEffectManager.stopRingtone()
         SoundEffectManager.playCallEndSound()
         notificationHelperProvider.get().cancelIncomingCallNotification()
+
+        try {
+            webRtcSignaling?.stop()
+        } catch (_: Exception) {}
+        webRtcSignaling = null
+
+        try {
+            webRtcClient?.close()
+        } catch (_: Exception) {}
+        webRtcClient = null
 
         try {
             audioVoipEngine?.stop()
@@ -1033,6 +1112,16 @@ class CallManager @Inject constructor(
         SoundEffectManager.stopRingtone()
         SoundEffectManager.playCallEndSound()
         notificationHelperProvider.get().cancelIncomingCallNotification()
+
+        try {
+            webRtcSignaling?.stop()
+        } catch (_: Exception) {}
+        webRtcSignaling = null
+
+        try {
+            webRtcClient?.close()
+        } catch (_: Exception) {}
+        webRtcClient = null
 
         try {
             audioVoipEngine?.stop()

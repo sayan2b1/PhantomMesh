@@ -106,6 +106,9 @@ dependencies {
     // ── Nearby Connections (P2P Mesh) ───────────────────────────
     implementation(libs.play.services.nearby)
 
+    // ── WebRTC (Real-time Peer-to-Peer Voice & Video Engine) ─────
+    implementation(libs.stream.webrtc)
+
     // ── Hilt DI ─────────────────────────────────────────────────
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

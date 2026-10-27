@@ -164,6 +164,7 @@ class MainActivity : ComponentActivity() {
                 activeCall?.let { call ->
                     CallOverlayScreen(
                         call = call,
+                        webRtcClient = callManager.webRtcClient,
                         onMuteToggle = { callManager.toggleMute() },
                         onSpeakerToggle = { callManager.toggleSpeaker() },
                         onVideoToggle = { callManager.toggleVideo() },
