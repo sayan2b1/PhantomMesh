@@ -38,10 +38,20 @@ class ChatViewModel @Inject constructor(
     val currentUserId: StateFlow<String?> = _currentUserId.asStateFlow()
     val currentUsername: StateFlow<String?> = sessionManager.usernameFlow
 
+    val chatWallpaperPath: StateFlow<String?> = sessionManager.chatWallpaperFlow
+
     init {
+        com.phantom.mesh.util.NotificationHelper.currentActiveChatId = chatId
         viewModelScope.launch {
             _currentUserId.value = sessionManager.getUserId()
         }
+    }
+
+    override fun onCleared() {
+        if (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == chatId) {
+            com.phantom.mesh.util.NotificationHelper.currentActiveChatId = null
+        }
+        super.onCleared()
     }
 
     fun sendMessage(text: String) {
@@ -152,6 +162,36 @@ class ChatViewModel @Inject constructor(
                 chatRepository.sendMediaMessage(chatId, targetId, tempFile, mimeType, dataType)
             } catch (e: Exception) {
                 android.util.Log.e("ChatViewModel", "Failed to process attachment: ${e.message}", e)
+            }
+        }
+    }
+
+    fun setWallpaperFromUri(context: android.content.Context, uri: android.net.Uri) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val wallpaperFile = File(context.filesDir, "chat_wallpaper.jpg")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    java.io.FileOutputStream(wallpaperFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                sessionManager.setChatWallpaperPath(wallpaperFile.absolutePath)
+            } catch (e: Exception) {
+                android.util.Log.e("ChatViewModel", "Failed to save wallpaper: ${e.message}", e)
+            }
+        }
+    }
+
+    fun removeWallpaper(context: android.content.Context) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val wallpaperFile = File(context.filesDir, "chat_wallpaper.jpg")
+                if (wallpaperFile.exists()) {
+                    wallpaperFile.delete()
+                }
+                sessionManager.setChatWallpaperPath(null)
+            } catch (e: Exception) {
+                android.util.Log.e("ChatViewModel", "Failed to remove wallpaper: ${e.message}", e)
             }
         }
     }

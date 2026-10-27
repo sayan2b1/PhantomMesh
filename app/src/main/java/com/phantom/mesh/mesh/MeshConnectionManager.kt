@@ -272,7 +272,7 @@ class MeshConnectionManager @Inject constructor(
                 .setDisruptiveUpgrade(false)
                 .build()
 
-            val nameToAdvertise = localDisplayName.ifBlank { sessionManager.getUsername() ?: "Peer" }
+            val nameToAdvertise = localDisplayName.ifBlank { sessionManager.getUsername() ?: "User" }
 
             connectionsClient.startAdvertising(
                 nameToAdvertise,
@@ -349,7 +349,7 @@ class MeshConnectionManager @Inject constructor(
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            val peerName = if (info.endpointName.isNotBlank()) info.endpointName else "Peer-${endpointId.take(4)}"
+            val peerName = if (info.endpointName.isNotBlank()) info.endpointName else "User-${endpointId.take(4)}"
             endpointDisplayNames[endpointId] = peerName
             android.util.Log.i(TAG, "Nearby peer discovered: $endpointId ($peerName)")
 
@@ -359,7 +359,7 @@ class MeshConnectionManager @Inject constructor(
             }
 
             if (pendingConnections.add(endpointId)) {
-                val myName = localDisplayName.ifBlank { sessionManager.getUsername() ?: "Peer" }
+                val myName = localDisplayName.ifBlank { sessionManager.getUsername() ?: "User" }
                 android.util.Log.i(TAG, "Requesting connection to peer: $endpointId ($peerName)")
                 connectionsClient.requestConnection(
                     myName,
@@ -388,7 +388,7 @@ class MeshConnectionManager @Inject constructor(
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             pendingConnections.remove(endpointId)
-            val peerName = if (info.endpointName.isNotBlank()) info.endpointName else "Peer-${endpointId.take(4)}"
+            val peerName = if (info.endpointName.isNotBlank()) info.endpointName else "User-${endpointId.take(4)}"
             endpointDisplayNames[endpointId] = peerName
             android.util.Log.i(TAG, "Connection initiated with $endpointId ($peerName) — auto-accepting")
 
@@ -413,7 +413,7 @@ class MeshConnectionManager @Inject constructor(
                 ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT -> {
                     android.util.Log.i(TAG, "Connection ESTABLISHED with $endpointId (statusCode=${result.status.statusCode})")
                     val existing = routingTable.getNode(endpointId)
-                    val resolvedName = endpointDisplayNames[endpointId] ?: existing?.displayName ?: "Peer-${endpointId.take(4)}"
+                    val resolvedName = endpointDisplayNames[endpointId] ?: existing?.displayName ?: "User-${endpointId.take(4)}"
                     val isBtOnly = sessionManager.isBluetoothOnlyMode() || !HardwareStateUtil.isWifiEnabled(context)
                     val connectionType = if (!isBtOnly && HardwareStateUtil.isWifiEnabled(context)) "wifi_direct" else "bluetooth"
                     

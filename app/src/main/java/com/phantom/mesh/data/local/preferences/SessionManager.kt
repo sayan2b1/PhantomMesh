@@ -27,6 +27,7 @@ class SessionManager @Inject constructor(
         private const val KEY_IS_LOGGED_IN = "session_is_logged_in"
         private const val KEY_LOGIN_TIMESTAMP = "session_login_timestamp"
         private const val KEY_BLUETOOTH_ONLY_MODE = "session_prefer_bluetooth_only"
+        private const val KEY_CHAT_WALLPAPER_PATH = "session_chat_wallpaper_path"
 
         /** 24 Hours in milliseconds */
         const val SESSION_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000L
@@ -49,6 +50,9 @@ class SessionManager @Inject constructor(
 
     private val _bluetoothOnlyModeFlow = MutableStateFlow(prefs.getBoolean(KEY_BLUETOOTH_ONLY_MODE, false))
     val bluetoothOnlyModeFlow: StateFlow<Boolean> = _bluetoothOnlyModeFlow.asStateFlow()
+
+    private val _chatWallpaperFlow = MutableStateFlow(prefs.getString(KEY_CHAT_WALLPAPER_PATH, null))
+    val chatWallpaperFlow: StateFlow<String?> = _chatWallpaperFlow.asStateFlow()
 
     /**
      * Persists session credentials immediately and stamps the current time.
@@ -82,6 +86,17 @@ class SessionManager @Inject constructor(
     fun setBluetoothOnlyMode(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_BLUETOOTH_ONLY_MODE, enabled).commit()
         _bluetoothOnlyModeFlow.value = enabled
+    }
+
+    fun getChatWallpaperPath(): String? = prefs.getString(KEY_CHAT_WALLPAPER_PATH, null)
+
+    fun setChatWallpaperPath(path: String?) {
+        if (path == null) {
+            prefs.edit().remove(KEY_CHAT_WALLPAPER_PATH).commit()
+        } else {
+            prefs.edit().putString(KEY_CHAT_WALLPAPER_PATH, path).commit()
+        }
+        _chatWallpaperFlow.value = path
     }
 
     /**

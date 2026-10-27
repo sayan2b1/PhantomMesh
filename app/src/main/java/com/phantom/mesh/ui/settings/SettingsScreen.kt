@@ -2,6 +2,7 @@ package com.phantom.mesh.ui.settings
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,8 +18,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockReset
@@ -26,6 +30,7 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -56,8 +61,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import java.io.File
 import com.phantom.mesh.ui.theme.DarkBackground
 import com.phantom.mesh.ui.theme.DarkCard
 import com.phantom.mesh.ui.theme.DarkSurface
@@ -79,7 +88,15 @@ fun SettingsScreen(
     val username by viewModel.username.collectAsState()
     val isDuress by viewModel.isDuress.collectAsState()
     val isBluetoothOnlyMode by viewModel.isBluetoothOnlyMode.collectAsState()
+    val chatWallpaperPath by viewModel.chatWallpaperPath.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
+    val context = LocalContext.current
+
+    val wallpaperPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let { viewModel.setWallpaperFromUri(context, it) }
+    }
 
     var decoyPassphrase by remember { mutableStateOf("") }
     var currentPassword by remember { mutableStateOf("") }
@@ -216,6 +233,120 @@ fun SettingsScreen(
                             uncheckedTrackColor = DarkSurface
                         )
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Chat Theme & Wallpaper Card
+            Text(
+                text = "CHAT THEME & WALLPAPER",
+                style = MaterialTheme.typography.labelSmall,
+                color = NeonCyan,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(DarkCard)
+                    .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
+                    .padding(16.dp)
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(NeonCyan.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Wallpaper,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Default Chat Wallpaper",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = if (!chatWallpaperPath.isNullOrBlank())
+                                    "Custom wallpaper active"
+                                else
+                                    "Default dark theme active",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (!chatWallpaperPath.isNullOrBlank()) NeonGreen else TextSecondary
+                            )
+                        }
+                    }
+
+                    if (!chatWallpaperPath.isNullOrBlank()) {
+                        val wallpaperFile = remember(chatWallpaperPath) { File(chatWallpaperPath!!) }
+                        if (wallpaperFile.exists()) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(100.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                            ) {
+                                AsyncImage(
+                                    model = wallpaperFile,
+                                    contentDescription = "Wallpaper Preview",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.3f))
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { wallpaperPickerLauncher.launch("image/*") },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan.copy(alpha = 0.2f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("CHOOSE PHOTO", color = NeonCyan, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                        }
+
+                        if (!chatWallpaperPath.isNullOrBlank()) {
+                            Button(
+                                onClick = { viewModel.removeWallpaper(context) },
+                                colors = ButtonDefaults.buttonColors(containerColor = DuressCrimson.copy(alpha = 0.2f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, DuressCrimson),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("RESET", color = DuressCrimson, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
                 }
             }
 

@@ -42,6 +42,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -357,8 +358,16 @@ fun MeshNodeCard(
                 Spacer(modifier = Modifier.width(12.dp))
 
                 Column {
+                    val cleanNodeName = remember(node.displayName) {
+                        node.displayName
+                            .removePrefix("Peer ")
+                            .removePrefix("Peer-")
+                            .removePrefix("PEER: ")
+                            .trim()
+                            .ifBlank { "User-${node.endpointId.take(4)}" }
+                    }
                     Text(
-                        text = node.displayName,
+                        text = cleanNodeName,
                         style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary,
                         fontSize = 15.sp

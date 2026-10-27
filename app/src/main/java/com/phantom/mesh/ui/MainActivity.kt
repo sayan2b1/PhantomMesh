@@ -10,6 +10,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation.compose.rememberNavController
 import com.google.firebase.auth.FirebaseAuth
 import com.phantom.mesh.data.local.preferences.SessionManager
@@ -60,8 +62,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val pendingRoute = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        val chatId = intent?.getStringExtra("extra_chat_id")
+        val targetId = intent?.getStringExtra("extra_target_id")
+        if (!chatId.isNullOrBlank() && !targetId.isNullOrBlank()) {
+            pendingRoute.value = Destinations.chatRoute(chatId, targetId)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleNotificationIntent(intent)
 
         // Enable edge-to-edge for smooth keyboard / IME handling
         enableEdgeToEdge()
@@ -107,6 +126,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             PhantomMeshTheme {
                 val navController = rememberNavController()
+                val targetRoute by pendingRoute.collectAsState()
+
+                androidx.compose.runtime.LaunchedEffect(targetRoute) {
+                    targetRoute?.let { route ->
+                        if (sessionManager.isSessionValid()) {
+                            navController.navigate(route)
+                        }
+                        pendingRoute.value = null
+                    }
+                }
+
                 PhantomNavGraph(navController = navController, startDestination = initialDestination)
             }
         }

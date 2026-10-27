@@ -58,11 +58,15 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -129,11 +133,22 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val currentUserId by viewModel.currentUserId.collectAsState()
     val currentUsername by viewModel.currentUsername.collectAsState()
+    val chatWallpaperPath by viewModel.chatWallpaperPath.collectAsState()
 
     var inputMessage by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     var selectedMessageForDelete by remember { mutableStateOf<MessageEntity?>(null) }
+    var showMenu by remember { mutableStateOf(false) }
+
+    val cleanTargetName = remember(viewModel.targetId) {
+        viewModel.targetId
+            .removePrefix("Peer ")
+            .removePrefix("Peer-")
+            .removePrefix("PEER: ")
+            .trim()
+            .ifBlank { "Encrypted Contact" }
+    }
 
     val voicePlayerManager = remember { VoicePlayerManager() }
     DisposableEffect(Unit) {
@@ -142,11 +157,28 @@ fun ChatScreen(
         }
     }
 
+    // Suppress notifications for this chat while active on screen
+    DisposableEffect(viewModel.chatId) {
+        com.phantom.mesh.util.NotificationHelper.currentActiveChatId = viewModel.chatId
+        onDispose {
+            if (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == viewModel.chatId) {
+                com.phantom.mesh.util.NotificationHelper.currentActiveChatId = null
+            }
+        }
+    }
+
     // Media attachment picker for images & videos
     val mediaPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: android.net.Uri? ->
         uri?.let { viewModel.sendUriAttachment(context, it) }
+    }
+
+    // Wallpaper theme picker launcher
+    val wallpaperPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let { viewModel.setWallpaperFromUri(context, it) }
     }
 
     // Auto-scroll to latest message automatically when new messages arrive or are sent
@@ -171,10 +203,12 @@ fun ChatScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "PEER: ${viewModel.targetId.take(12)}",
+                                text = cleanTargetName,
                                 style = MaterialTheme.typography.titleLarge,
                                 color = TextPrimary,
-                                fontFamily = FontFamily.Monospace
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                         }
                         Text(
@@ -194,64 +228,136 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // DYNAMIC NETWORK INDICATOR IN TOP APP BAR
+                    // Dynamic Network Indicator in Top App Bar
                     NetworkIndicator(transport = transport, showLabel = true)
+
+                    // Menu for Theme / Wallpaper options
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More Options",
+                                tint = NeonCyan
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            modifier = Modifier.background(DarkCard)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Set Chat Wallpaper", color = TextPrimary) },
+                                onClick = {
+                                    showMenu = false
+                                    wallpaperPickerLauncher.launch("image/*")
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Wallpaper,
+                                        contentDescription = null,
+                                        tint = NeonCyan
+                                    )
+                                }
+                            )
+                            if (!chatWallpaperPath.isNullOrBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("Reset Wallpaper", color = DuressCrimson) },
+                                    onClick = {
+                                        showMenu = false
+                                        viewModel.removeWallpaper(context)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = null,
+                                            tint = DuressCrimson
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface)
             )
         },
         containerColor = DarkBackground
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .consumeWindowInsets(padding)
-                .imePadding()
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                reverseLayout = true // Chat style: latest messages at the bottom
-            ) {
-                items(messages, key = { it.messageId }) { message ->
-                    val isMe = message.senderId == currentUserId || 
-                               (currentUsername != null && message.senderId.equals(currentUsername, ignoreCase = true))
-                    Box(modifier = Modifier.animateItem()) {
-                        MessageBubble(
-                            message = message,
-                            isMe = isMe,
-                            voicePlayerManager = voicePlayerManager,
-                            onLongClick = {
-                                if (message.content != "🚫 This message was deleted" && message.dataType != "deleted") {
-                                    selectedMessageForDelete = message
-                                }
-                            }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
+            // Render custom chat wallpaper if set by the user
+            if (!chatWallpaperPath.isNullOrBlank()) {
+                val wallpaperFile = remember(chatWallpaperPath) { File(chatWallpaperPath!!) }
+                if (wallpaperFile.exists()) {
+                    AsyncImage(
+                        model = wallpaperFile,
+                        contentDescription = "Chat Wallpaper",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    // 55% dark scrim overlay to guarantee high-contrast legibility of neon chat bubbles
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.55f))
+                    )
                 }
             }
 
-            ChatInputBar(
-                text = inputMessage,
-                onTextChange = { inputMessage = it },
-                onAttachClick = {
-                    mediaPickerLauncher.launch("*/*")
-                },
-                onSend = {
-                    if (inputMessage.isNotBlank()) {
-                        viewModel.sendMessage(inputMessage)
-                        inputMessage = ""
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imePadding()
+            ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    reverseLayout = true // Chat style: latest messages at the bottom
+                ) {
+                    items(messages, key = { it.messageId }) { message ->
+                        val isMe = message.senderId == currentUserId || 
+                                   (currentUsername != null && message.senderId.equals(currentUsername, ignoreCase = true))
+                        Box(modifier = Modifier.animateItem()) {
+                            MessageBubble(
+                                message = message,
+                                isMe = isMe,
+                                voicePlayerManager = voicePlayerManager,
+                                onLongClick = {
+                                    if (message.content != "🚫 This message was deleted" && message.dataType != "deleted") {
+                                        selectedMessageForDelete = message
+                                    }
+                                }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
                     }
-                },
-                onSendVoiceMessage = { file, durationMs ->
-                    viewModel.sendVoiceMessage(file, durationMs)
                 }
-            )
+
+                ChatInputBar(
+                    text = inputMessage,
+                    onTextChange = { inputMessage = it },
+                    onAttachClick = {
+                        mediaPickerLauncher.launch("*/*")
+                    },
+                    onSend = {
+                        if (inputMessage.isNotBlank()) {
+                            viewModel.sendMessage(inputMessage)
+                            inputMessage = ""
+                        }
+                    },
+                    onSendVoiceMessage = { file, durationMs ->
+                        viewModel.sendVoiceMessage(file, durationMs)
+                    }
+                )
+            }
         }
     }
 
