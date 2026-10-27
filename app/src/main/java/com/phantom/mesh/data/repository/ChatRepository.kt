@@ -160,22 +160,31 @@ class ChatRepository @Inject constructor(
         targetId: String,
         localFile: File,
         mimeType: String,
-        dataType: String = "image"
+        dataType: String = "image",
+        customDisplayName: String? = null
     ): MessageEntity = withContext(Dispatchers.IO) {
         val currentUserId = sessionManager.getUserId() ?: "anon_sender"
         val messageId = "media_${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
         val isOnline = networkStateManager.isInternetAvailable.value
 
+        val contentName = customDisplayName ?: localFile.name
+        val previewTag = when (dataType) {
+            "image" -> "[Image Attachment]"
+            "video" -> "[Video Attachment]"
+            "audio" -> "🎵 $contentName"
+            else -> "[Attachment: $contentName]"
+        }
+
         // Ensure parent chat entry exists FIRST
-        ensureChatExists(chatId, targetId, "[Attachment: ${localFile.name}]", now, if (isOnline) "cloud" else "mesh")
+        ensureChatExists(chatId, targetId, previewTag, now, if (isOnline) "cloud" else "mesh")
 
         val message = MessageEntity(
             messageId = messageId,
             chatId = chatId,
             senderId = currentUserId,
             targetId = targetId,
-            content = localFile.name,
+            content = contentName,
             dataType = dataType,
             mediaLocalUri = localFile.absolutePath,
             mediaSizeBytes = localFile.length(),

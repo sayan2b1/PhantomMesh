@@ -2,6 +2,7 @@ package com.phantom.mesh.ui.chat
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -51,19 +53,29 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContactPhone
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -95,6 +107,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -134,12 +147,17 @@ fun ChatScreen(
     val currentUserId by viewModel.currentUserId.collectAsState()
     val currentUsername by viewModel.currentUsername.collectAsState()
     val chatWallpaperPath by viewModel.chatWallpaperPath.collectAsState()
+    val contactAliases by viewModel.contactAliases.collectAsState()
 
     var inputMessage by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     var selectedMessageForDelete by remember { mutableStateOf<MessageEntity?>(null) }
     var showMenu by remember { mutableStateOf(false) }
+    var showAttachmentSheet by remember { mutableStateOf(false) }
+    var showAudioPickerSheet by remember { mutableStateOf(false) }
+    var showCustomNameDialog by remember { mutableStateOf(false) }
+    var aliasInput by remember { mutableStateOf("") }
 
     val cleanTargetName = remember(viewModel.targetId) {
         viewModel.targetId
@@ -148,6 +166,10 @@ fun ChatScreen(
             .removePrefix("PEER: ")
             .trim()
             .ifBlank { "Encrypted Contact" }
+    }
+
+    val formattedTargetName = remember(viewModel.targetId, contactAliases) {
+        viewModel.getFormattedTargetName()
     }
 
     val voicePlayerManager = remember { VoicePlayerManager() }
@@ -167,11 +189,59 @@ fun ChatScreen(
         }
     }
 
-    // Media attachment picker for images & videos
-    val mediaPickerLauncher = rememberLauncherForActivityResult(
+    // Photo Picker with device albums
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: android.net.Uri? ->
+        uri?.let { viewModel.sendUriAttachment(context, it) }
+    }
+
+    // Video Picker with device albums
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: android.net.Uri? ->
+        uri?.let { viewModel.sendUriAttachment(context, it) }
+    }
+
+    // Documents picker (Android system files)
+    val documentPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: android.net.Uri? ->
         uri?.let { viewModel.sendUriAttachment(context, it) }
+    }
+
+    // Audio permission check for WhatsApp-like audio picker
+    val audioPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_AUDIO
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            showAudioPickerSheet = true
+        } else {
+            Toast.makeText(context, "Storage permission is required to view audio tracks", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Contacts picker
+    val contactPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickContact()
+    ) { uri: android.net.Uri? ->
+        uri?.let { viewModel.sendContact(context, it) }
+    }
+
+    val contactPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            contactPickerLauncher.launch(null)
+        } else {
+            Toast.makeText(context, "Contact permission is required to share contacts", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // Wallpaper theme picker launcher
@@ -193,7 +263,15 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                aliasInput = viewModel.getTargetAlias() ?: ""
+                                showCustomNameDialog = true
+                            }
+                            .padding(vertical = 2.dp, horizontal = 4.dp)
+                    ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.Lock,
@@ -203,12 +281,19 @@ fun ChatScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = cleanTargetName,
-                                style = MaterialTheme.typography.titleLarge,
+                                text = formattedTargetName,
+                                style = MaterialTheme.typography.titleMedium,
                                 color = TextPrimary,
                                 fontFamily = FontFamily.Monospace,
                                 maxLines = 1,
                                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Edit Contact Name",
+                                tint = TextMuted,
+                                modifier = Modifier.size(13.dp)
                             )
                         }
                         Text(
@@ -231,7 +316,7 @@ fun ChatScreen(
                     // Dynamic Network Indicator in Top App Bar
                     NetworkIndicator(transport = transport, showLabel = true)
 
-                    // Menu for Theme / Wallpaper options
+                    // Menu for Theme / Wallpaper / Contact options
                     Box {
                         IconButton(onClick = { showMenu = true }) {
                             Icon(
@@ -246,6 +331,21 @@ fun ChatScreen(
                             onDismissRequest = { showMenu = false },
                             modifier = Modifier.background(DarkCard)
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Edit Contact Name", color = TextPrimary) },
+                                onClick = {
+                                    showMenu = false
+                                    aliasInput = viewModel.getTargetAlias() ?: ""
+                                    showCustomNameDialog = true
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Badge,
+                                        contentDescription = null,
+                                        tint = NeonCyan
+                                    )
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Set Chat Wallpaper", color = TextPrimary) },
                                 onClick = {
@@ -345,7 +445,7 @@ fun ChatScreen(
                     text = inputMessage,
                     onTextChange = { inputMessage = it },
                     onAttachClick = {
-                        mediaPickerLauncher.launch("*/*")
+                        showAttachmentSheet = true
                     },
                     onSend = {
                         if (inputMessage.isNotBlank()) {
@@ -359,6 +459,312 @@ fun ChatScreen(
                 )
             }
         }
+    }
+
+    // Attachment Options Bottom Sheet (Photos, Videos, Documents, Contacts)
+    if (showAttachmentSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAttachmentSheet = false },
+            containerColor = DarkCard,
+            dragHandle = {
+                Box(
+                    modifier = Modifier
+                        .padding(vertical = 12.dp)
+                        .width(36.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(alpha = 0.25f))
+                )
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .padding(bottom = 36.dp)
+            ) {
+                Text(
+                    text = "Share Attachment",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 16.sp
+                )
+                Text(
+                    text = "Select media category or contact to send",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // 1. Photos (Visual Media Picker with Albums)
+                    AttachmentOptionCard(
+                        icon = Icons.Default.PhotoLibrary,
+                        label = "Photos",
+                        subLabel = "Albums",
+                        iconTint = Color(0xFF4E95FF),
+                        backgroundTint = Color(0xFF4E95FF).copy(alpha = 0.15f),
+                        borderColor = Color(0xFF4E95FF).copy(alpha = 0.4f),
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            showAttachmentSheet = false
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    // 2. Videos (Visual Media Picker with Albums)
+                    AttachmentOptionCard(
+                        icon = Icons.Default.VideoLibrary,
+                        label = "Videos",
+                        subLabel = "Albums",
+                        iconTint = Color(0xFFFF5252),
+                        backgroundTint = Color(0xFFFF5252).copy(alpha = 0.15f),
+                        borderColor = Color(0xFFFF5252).copy(alpha = 0.4f),
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            showAttachmentSheet = false
+                            videoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                            )
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // 3. Music (Audio Tracks & Songs)
+                    AttachmentOptionCard(
+                        icon = Icons.Default.MusicNote,
+                        label = "Music",
+                        subLabel = "Audio Tracks",
+                        iconTint = Color(0xFFFF9800),
+                        backgroundTint = Color(0xFFFF9800).copy(alpha = 0.15f),
+                        borderColor = Color(0xFFFF9800).copy(alpha = 0.4f),
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            showAttachmentSheet = false
+                            if (ContextCompat.checkSelfPermission(context, audioPermission) == PackageManager.PERMISSION_GRANTED) {
+                                showAudioPickerSheet = true
+                            } else {
+                                audioPermissionLauncher.launch(audioPermission)
+                            }
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    // 4. Documents (Android Files)
+                    AttachmentOptionCard(
+                        icon = Icons.Default.Description,
+                        label = "Documents",
+                        subLabel = "All Files",
+                        iconTint = Color(0xFF9C27B0),
+                        backgroundTint = Color(0xFF9C27B0).copy(alpha = 0.15f),
+                        borderColor = Color(0xFF9C27B0).copy(alpha = 0.4f),
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            showAttachmentSheet = false
+                            documentPickerLauncher.launch("*/*")
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 5. Contacts (Phone Contacts as Text Card)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(DarkSurfaceVariant.copy(alpha = 0.5f))
+                        .border(1.dp, Color(0xFF00E676).copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                        .clickable {
+                            showAttachmentSheet = false
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+                                contactPickerLauncher.launch(null)
+                            } else {
+                                contactPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF00E676).copy(alpha = 0.15f))
+                            .border(1.dp, Color(0xFF00E676).copy(alpha = 0.5f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContactPhone,
+                            contentDescription = "Contacts",
+                            tint = Color(0xFF00E676),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Contacts",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Phone Book • Shared as contact card",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // WhatsApp-like Audio Picker Screen
+    if (showAudioPickerSheet) {
+        AudioPickerSheet(
+            onAudioSelected = { uri ->
+                viewModel.sendUriAttachment(context, uri)
+            },
+            onDismiss = {
+                showAudioPickerSheet = false
+            }
+        )
+    }
+
+    // Custom Contact Naming Dialog
+    if (showCustomNameDialog) {
+        val currentAlias = viewModel.getTargetAlias()
+        AlertDialog(
+            onDismissRequest = { showCustomNameDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Badge,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Custom Contact Name", color = TextPrimary)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Set a customized name for @$cleanTargetName. Both names will appear together, e.g. Sayan Dolai ($cleanTargetName).",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    OutlinedTextField(
+                        value = aliasInput,
+                        onValueChange = { aliasInput = it },
+                        label = { Text("Custom Name") },
+                        placeholder = { Text("e.g. Sayan Dolai") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Live Preview Box
+                    val previewText = remember(aliasInput, cleanTargetName) {
+                        val trimmed = aliasInput.trim()
+                        if (trimmed.isNotBlank() && !trimmed.equals(cleanTargetName, ignoreCase = true)) {
+                            "$trimmed ($cleanTargetName)"
+                        } else {
+                            cleanTargetName
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(DarkSurfaceVariant.copy(alpha = 0.6f))
+                            .padding(10.dp)
+                    ) {
+                        Column {
+                            Text("LIVE DISPLAY PREVIEW", fontSize = 10.sp, color = TextMuted, fontFamily = FontFamily.Monospace)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = previewText,
+                                fontSize = 14.sp,
+                                color = NeonCyan,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!currentAlias.isNullOrBlank()) {
+                        TextButton(
+                            onClick = {
+                                viewModel.clearTargetAlias()
+                                showCustomNameDialog = false
+                                Toast.makeText(context, "Custom name removed", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Text("RESET", color = DuressCrimson, fontSize = 12.sp)
+                        }
+                    }
+
+                    TextButton(
+                        onClick = {
+                            val trimmed = aliasInput.trim()
+                            if (trimmed.isNotBlank()) {
+                                viewModel.setTargetAlias(trimmed)
+                                Toast.makeText(context, "Contact name updated", Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.clearTargetAlias()
+                            }
+                            showCustomNameDialog = false
+                        }
+                    ) {
+                        Text("SAVE", color = NeonCyan, fontSize = 12.sp)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomNameDialog = false }) {
+                    Text("CANCEL", color = TextMuted, fontSize = 12.sp)
+                }
+            },
+            containerColor = DarkCard
+        )
     }
 
     // Delete message dialog (WhatsApp style)
@@ -502,11 +908,22 @@ fun MessageBubble(
                             )
                         }
                     } else {
-                        val isVoice = message.dataType == "voice" ||
-                                message.mimeType?.startsWith("audio") == true ||
-                                message.mediaCloudUrl?.startsWith("data:audio") == true
+                        val isVoice = message.dataType == "voice"
 
-                        val isImage = !isVoice && (message.dataType == "image" ||
+                        val isAudio = !isVoice && (message.dataType == "audio" ||
+                                message.mimeType?.startsWith("audio") == true ||
+                                message.mediaCloudUrl?.startsWith("data:audio") == true ||
+                                message.content?.endsWith(".mp3", ignoreCase = true) == true ||
+                                message.content?.endsWith(".m4a", ignoreCase = true) == true ||
+                                message.content?.endsWith(".wav", ignoreCase = true) == true ||
+                                message.content?.endsWith(".aac", ignoreCase = true) == true ||
+                                message.content?.endsWith(".ogg", ignoreCase = true) == true ||
+                                message.content?.endsWith(".flac", ignoreCase = true) == true ||
+                                message.mediaLocalUri?.endsWith(".mp3", ignoreCase = true) == true ||
+                                message.mediaLocalUri?.endsWith(".m4a", ignoreCase = true) == true ||
+                                message.mediaLocalUri?.endsWith(".wav", ignoreCase = true) == true)
+
+                        val isImage = !isVoice && !isAudio && (message.dataType == "image" ||
                                 message.mimeType?.startsWith("image") == true ||
                                 message.mediaCloudUrl?.startsWith("data:image") == true ||
                                 message.mediaLocalUri?.endsWith(".jpg", ignoreCase = true) == true ||
@@ -515,10 +932,17 @@ fun MessageBubble(
                                 message.content?.endsWith(".png", ignoreCase = true) == true ||
                                 message.content?.startsWith("attachment_", ignoreCase = true) == true)
 
-                        val isVideo = !isVoice && !isImage && (message.dataType == "video" || message.mimeType?.startsWith("video") == true)
+                        val isVideo = !isVoice && !isAudio && !isImage && (message.dataType == "video" || message.mimeType?.startsWith("video") == true)
 
                         if (isVoice) {
                             VoiceMessageBubbleContent(
+                                message = message,
+                                voicePlayerManager = voicePlayerManager,
+                                isMe = isMe,
+                                onLongClick = onLongClick
+                            )
+                        } else if (isAudio) {
+                            AudioTrackBubbleContent(
                                 message = message,
                                 voicePlayerManager = voicePlayerManager,
                                 isMe = isMe,
@@ -559,20 +983,25 @@ fun MessageBubble(
                         }
 
                         // Text caption (hide placeholder tags, voice captions, and auto-generated filenames)
-                        val isAttachmentPlaceholder = isVoice ||
+                        val isAttachmentPlaceholder = isVoice || isAudio ||
                                 message.content?.startsWith("attachment_", ignoreCase = true) == true ||
                                 message.content?.startsWith("[Attachment:", ignoreCase = true) == true ||
                                 message.content?.equals("[Image Attachment]", ignoreCase = true) == true ||
                                 message.content?.endsWith(".jpg", ignoreCase = true) == true ||
                                 message.content?.endsWith(".png", ignoreCase = true) == true
 
-                        val showContent = !message.content.isNullOrBlank() && (!isImage && !isVideo || !isAttachmentPlaceholder) && !isVoice
+                        val isContactCard = message.content?.startsWith("👤 Contact Card:") == true
+                        val showContent = !message.content.isNullOrBlank() && (!isImage && !isVideo || !isAttachmentPlaceholder) && !isVoice && !isAudio
                         if (showContent) {
-                            Text(
-                                text = message.content ?: "",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = TextPrimary
-                            )
+                            if (isContactCard) {
+                                ContactCardContent(content = message.content!!, isMe = isMe)
+                            } else {
+                                Text(
+                                    text = message.content ?: "",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = TextPrimary
+                                )
+                            }
                             Spacer(modifier = Modifier.height(4.dp))
                         }
                     } // End of !isDeleted check
@@ -734,6 +1163,147 @@ fun VoiceMessageBubbleContent(
                     tint = if (isThisMessagePlaying) NeonCyan else TextMuted,
                     modifier = Modifier.size(12.dp)
                 )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun AudioTrackBubbleContent(
+    message: MessageEntity,
+    voicePlayerManager: VoicePlayerManager,
+    isMe: Boolean,
+    onLongClick: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val activePlayingId by voicePlayerManager.activePlayingMessageId.collectAsState()
+    val isPlaying by voicePlayerManager.isPlaying.collectAsState()
+    val progress by voicePlayerManager.playbackProgress.collectAsState()
+    val currentPositionMs by voicePlayerManager.currentPositionMs.collectAsState()
+    val totalDurationMs by voicePlayerManager.totalDurationMs.collectAsState()
+
+    val isThisTrackPlaying = activePlayingId == message.messageId && isPlaying
+    val displayProgress = if (activePlayingId == message.messageId) progress else 0f
+    val displayDuration = if (activePlayingId == message.messageId && totalDurationMs > 0) {
+        val currSec = currentPositionMs / 1000
+        val totSec = totalDurationMs / 1000
+        String.format("%d:%02d / %d:%02d", currSec / 60, currSec % 60, totSec / 60, totSec % 60)
+    } else {
+        "Audio Track"
+    }
+
+    val trackTitle = remember(message.content) {
+        val raw = message.content?.trim()
+        if (raw.isNullOrBlank() || raw.startsWith("attachment_") || raw.startsWith("[Attachment:")) {
+            "Audio Track"
+        } else {
+            raw
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.28f))
+            .border(1.dp, Color(0xFFFF9800).copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = {
+                    voicePlayerManager.togglePlay(context, message.messageId, message.mediaLocalUri, message.mediaCloudUrl)
+                },
+                onLongClick = onLongClick
+            )
+            .padding(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Play / Pause circular action button
+            IconButton(
+                onClick = {
+                    voicePlayerManager.togglePlay(context, message.messageId, message.mediaLocalUri, message.mediaCloudUrl)
+                },
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(if (isThisTrackPlaying) Color(0xFFFF9800) else Color(0xFFFF9800).copy(alpha = 0.2f))
+            ) {
+                Icon(
+                    imageVector = if (isThisTrackPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (isThisTrackPlaying) "Pause" else "Play",
+                    tint = if (isThisTrackPlaying) DarkBackground else Color(0xFFFF9800),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = Color(0xFFFF9800),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = trackTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Progress Bar
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(alpha = 0.15f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(displayProgress.coerceIn(0f, 1f))
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color(0xFFFF9800))
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = displayDuration,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "MUSIC",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFFF9800),
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }
@@ -1228,3 +1798,152 @@ fun ImageMessageContent(
         Spacer(modifier = Modifier.height(6.dp))
     }
 }
+
+@Composable
+fun AttachmentOptionCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    subLabel: String,
+    iconTint: Color,
+    backgroundTint: Color,
+    borderColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(DarkSurfaceVariant.copy(alpha = 0.5f))
+            .border(1.dp, borderColor.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 16.dp, horizontal = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(backgroundTint)
+                .border(1.dp, borderColor.copy(alpha = 0.5f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = iconTint,
+                modifier = Modifier.size(26.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleMedium,
+            color = TextPrimary,
+            fontSize = 14.sp,
+            fontFamily = FontFamily.Monospace
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = subLabel,
+            style = MaterialTheme.typography.bodySmall,
+            color = TextMuted,
+            fontSize = 11.sp
+        )
+    }
+}
+
+@Composable
+fun ContactCardContent(
+    content: String,
+    isMe: Boolean
+) {
+    val lines = content.lines()
+    val nameLine = lines.firstOrNull { it.contains("Contact Card:") }?.substringAfter("Contact Card:")?.trim() ?: "Contact"
+    val numbers = lines.filter { it.contains("Mobile:") }.map { it.substringAfter("Mobile:").trim() }
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isMe) DarkCard.copy(alpha = 0.7f) else DarkSurfaceVariant.copy(alpha = 0.7f))
+            .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(NeonCyan.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = null,
+                    tint = NeonCyan,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = nameLine,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    fontSize = 15.sp
+                )
+                Text(
+                    text = "Shared Contact",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
+            }
+        }
+
+        if (numbers.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            numbers.forEach { number ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            try {
+                                val intent = android.content.Intent(android.content.Intent.ACTION_DIAL).apply {
+                                    data = android.net.Uri.parse("tel:$number")
+                                }
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Number: $number", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "📞 $number",
+                        color = NeonCyan,
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "DIAL",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+    }
+}
+

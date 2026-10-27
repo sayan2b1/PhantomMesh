@@ -23,6 +23,7 @@ class ChatViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
+    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -39,6 +40,23 @@ class ChatViewModel @Inject constructor(
     val currentUsername: StateFlow<String?> = sessionManager.usernameFlow
 
     val chatWallpaperPath: StateFlow<String?> = sessionManager.chatWallpaperFlow
+    val contactAliases: StateFlow<Map<String, String>> = contactAliasManager.aliasesFlow
+
+    fun setTargetAlias(alias: String) {
+        contactAliasManager.setAlias(targetId, alias)
+    }
+
+    fun clearTargetAlias() {
+        contactAliasManager.clearAlias(targetId)
+    }
+
+    fun getTargetAlias(): String? {
+        return contactAliasManager.getAlias(targetId)
+    }
+
+    fun getFormattedTargetName(): String {
+        return contactAliasManager.getFormattedDisplayName(targetId)
+    }
 
     init {
         com.phantom.mesh.util.NotificationHelper.currentActiveChatId = chatId
@@ -109,13 +127,31 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val contentResolver = context.contentResolver
-                val mimeType = contentResolver.getType(uri) ?: "image/jpeg"
+                val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
                 val isImage = mimeType.startsWith("image")
                 val isVideo = mimeType.startsWith("video")
-                val dataType = if (isImage) "image" else if (isVideo) "video" else "file"
+                val isAudio = mimeType.startsWith("audio")
+                val dataType = if (isImage) "image" else if (isVideo) "video" else if (isAudio) "audio" else "file"
 
-                val extension = if (isImage) "jpg" else if (isVideo) "mp4" else "bin"
-                val tempFile = File(context.cacheDir, "attachment_${System.currentTimeMillis()}.$extension")
+                // Query real file display name if available
+                var realDisplayName: String? = null
+                try {
+                    contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (idx != -1) realDisplayName = cursor.getString(idx)
+                        }
+                    }
+                } catch (ignored: Exception) {}
+
+                val fileExtFromName = realDisplayName?.substringAfterLast('.', "")?.takeIf { it.isNotBlank() }
+                val extension = if (isImage) "jpg"
+                    else if (isVideo) "mp4"
+                    else if (isAudio) (fileExtFromName ?: "mp3")
+                    else (fileExtFromName ?: "bin")
+
+                val prefix = if (isAudio) "audio_" else "attachment_"
+                val tempFile = File(context.cacheDir, "${prefix}${System.currentTimeMillis()}.$extension")
 
                 if (isImage) {
                     // Downsample to max 1280px to optimize transfer and avoid OOM
@@ -159,7 +195,8 @@ class ChatViewModel @Inject constructor(
                     }
                 }
 
-                chatRepository.sendMediaMessage(chatId, targetId, tempFile, mimeType, dataType)
+                val finalDisplayName = realDisplayName ?: tempFile.name
+                chatRepository.sendMediaMessage(chatId, targetId, tempFile, mimeType, dataType, finalDisplayName)
             } catch (e: Exception) {
                 android.util.Log.e("ChatViewModel", "Failed to process attachment: ${e.message}", e)
             }
@@ -192,6 +229,19 @@ class ChatViewModel @Inject constructor(
                 sessionManager.setChatWallpaperPath(null)
             } catch (e: Exception) {
                 android.util.Log.e("ChatViewModel", "Failed to remove wallpaper: ${e.message}", e)
+            }
+        }
+    }
+
+    fun sendContact(context: android.content.Context, uri: android.net.Uri) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val card = com.phantom.mesh.util.ContactHelper.extractContactCard(context, uri)
+                if (!card.isNullOrBlank()) {
+                    chatRepository.sendTextMessage(chatId, targetId, card)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ChatViewModel", "Failed to send contact: ${e.message}", e)
             }
         }
     }

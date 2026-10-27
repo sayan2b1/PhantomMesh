@@ -59,31 +59,52 @@ class VoicePlayerManager {
         stop()
 
         val resolvedFile = resolveAudioSource(context, messageId, localUri, cloudUrl)
-        if (resolvedFile == null || !resolvedFile.exists()) {
-            Log.w(TAG, "Audio file could not be resolved for message $messageId")
-            return
-        }
-
-        try {
-            val player = MediaPlayer().apply {
-                setDataSource(resolvedFile.absolutePath)
-                prepare()
-                setOnCompletionListener {
-                    stop()
+        if (resolvedFile != null && resolvedFile.exists()) {
+            try {
+                val player = MediaPlayer().apply {
+                    setDataSource(resolvedFile.absolutePath)
+                    prepare()
+                    setOnCompletionListener {
+                        stop()
+                    }
                 }
+
+                mediaPlayer = player
+                _activePlayingMessageId.value = messageId
+                _totalDurationMs.value = player.duration.coerceAtLeast(1)
+                player.start()
+                _isPlaying.value = true
+                startProgressTracker()
+                return
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed playing local audio: ${e.message}", e)
             }
-
-            mediaPlayer = player
-            _activePlayingMessageId.value = messageId
-            _totalDurationMs.value = player.duration.coerceAtLeast(1)
-            player.start()
-            _isPlaying.value = true
-
-            startProgressTracker()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed playing voice message: ${e.message}", e)
-            stop()
         }
+
+        if (cloudUrl?.startsWith("http") == true) {
+            try {
+                val player = MediaPlayer().apply {
+                    setDataSource(cloudUrl)
+                    setOnPreparedListener { mp ->
+                        mp.start()
+                        _isPlaying.value = true
+                        _activePlayingMessageId.value = messageId
+                        _totalDurationMs.value = mp.duration.coerceAtLeast(1)
+                        startProgressTracker()
+                    }
+                    setOnCompletionListener {
+                        stop()
+                    }
+                    prepareAsync()
+                }
+                mediaPlayer = player
+                return
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed streaming remote audio: ${e.message}", e)
+            }
+        }
+
+        Log.w(TAG, "Audio file could not be resolved for message $messageId")
     }
 
     private fun resume() {
