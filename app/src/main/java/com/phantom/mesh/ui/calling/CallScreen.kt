@@ -43,13 +43,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,8 +69,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
@@ -100,40 +103,35 @@ fun CallOverlayScreen(
 ) {
     val context = LocalContext.current
 
-    Dialog(
-        onDismissRequest = { /* Prevent accidental dismissal during active call */ },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = false,
-            dismissOnClickOutside = false
-        )
+    BackHandler(enabled = true) {
+        // Prevent accidental dismissal during active or ringing call
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = DarkBackground
     ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = DarkBackground
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color(0xFF070B12),
-                                DarkBackground,
-                                Color(0xFF03070C)
-                            )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0xFF070B12),
+                            DarkBackground,
+                            Color(0xFF03070C)
                         )
                     )
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(24.dp)
-            ) {
+                )
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(24.dp)
+        ) {
                 // Background Cybernetic Grid / Video Feed Container
                 if (call.callType == CallType.VIDEO && call.status == CallStatus.CONNECTED) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(24.dp))
                             .background(Color(0xFF0A121D))
                             .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
                     ) {
@@ -227,7 +225,6 @@ fun CallOverlayScreen(
                                 .align(Alignment.TopEnd)
                                 .padding(16.dp)
                                 .size(width = 110.dp, height = 150.dp)
-                                .clip(RoundedCornerShape(14.dp))
                                 .background(DarkCard)
                                 .border(1.5.dp, NeonGreen.copy(alpha = 0.6f), RoundedCornerShape(14.dp)),
                             contentAlignment = Alignment.Center
@@ -589,7 +586,6 @@ fun CallOverlayScreen(
             }
         }
     }
-}
 
 @Composable
 fun WebRtcSurfaceViewRenderer(
@@ -599,49 +595,57 @@ fun WebRtcSurfaceViewRenderer(
     isMirror: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val renderer = remember {
-        SurfaceViewRenderer(context).apply {
-            setEnableHardwareScaler(true)
-            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-            if (isOverlay) {
-                setZOrderMediaOverlay(true)
+    val currentTrack = rememberUpdatedState(videoTrack)
+    var currentRenderer by remember { mutableStateOf<SurfaceViewRenderer?>(null) }
+
+    DisposableEffect(videoTrack, currentRenderer) {
+        val renderer = currentRenderer
+        if (renderer != null && videoTrack != null) {
+            try {
+                videoTrack.addSink(renderer)
+            } catch (_: Exception) {}
+        }
+        onDispose {
+            if (renderer != null && videoTrack != null) {
+                try {
+                    videoTrack.removeSink(renderer)
+                } catch (_: Exception) {}
             }
-            setMirror(isMirror)
-            try {
-                init(eglBaseContext, null)
-            } catch (_: Exception) {}
-        }
-    }
-
-    LaunchedEffect(isMirror) {
-        try {
-            renderer.setMirror(isMirror)
-        } catch (_: Exception) {}
-    }
-
-    DisposableEffect(videoTrack, renderer) {
-        try {
-            videoTrack?.addSink(renderer)
-        } catch (_: Exception) {}
-        onDispose {
-            try {
-                videoTrack?.removeSink(renderer)
-            } catch (_: Exception) {}
-        }
-    }
-
-    DisposableEffect(renderer) {
-        onDispose {
-            try {
-                renderer.clearImage()
-                renderer.release()
-            } catch (_: Exception) {}
         }
     }
 
     AndroidView(
-        factory = { renderer },
+        factory = { ctx ->
+            SurfaceViewRenderer(ctx).apply {
+                setEnableHardwareScaler(true)
+                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                if (isOverlay) {
+                    setZOrderMediaOverlay(true)
+                }
+                setMirror(isMirror)
+                try {
+                    init(eglBaseContext, null)
+                } catch (e: Exception) {
+                    Log.w("WebRtcRenderer", "Renderer init error: ${e.message}")
+                }
+                currentRenderer = this
+            }
+        },
+        update = { renderer ->
+            try {
+                renderer.setMirror(isMirror)
+            } catch (_: Exception) {}
+        },
+        onRelease = { renderer ->
+            try {
+                currentTrack.value?.removeSink(renderer)
+                renderer.clearImage()
+                renderer.release()
+            } catch (_: Exception) {}
+            if (currentRenderer == renderer) {
+                currentRenderer = null
+            }
+        },
         modifier = modifier
     )
 }

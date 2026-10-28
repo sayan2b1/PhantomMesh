@@ -161,10 +161,11 @@ class MainActivity : ComponentActivity() {
                 // ── GLOBAL ACTIVE & INCOMING CALL OVERLAY ───────────────────
                 // Renders across the entire app whenever a call is ringing or active
                 val activeCall by callManager.currentCall.collectAsState()
+                val activeWebRtcClient by callManager.webRtcClientFlow.collectAsState()
                 activeCall?.let { call ->
                     CallOverlayScreen(
                         call = call,
-                        webRtcClient = callManager.webRtcClient,
+                        webRtcClient = activeWebRtcClient,
                         onMuteToggle = { callManager.toggleMute() },
                         onSpeakerToggle = { callManager.toggleSpeaker() },
                         onVideoToggle = { callManager.toggleVideo() },
