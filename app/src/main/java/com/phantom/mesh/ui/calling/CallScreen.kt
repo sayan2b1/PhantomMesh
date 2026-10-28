@@ -45,6 +45,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -73,8 +75,6 @@ import androidx.core.content.ContextCompat
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
 import org.webrtc.VideoTrack
-import io.getstream.webrtc.android.compose.VideoRenderer
-import io.getstream.webrtc.android.compose.VideoScalingType
 import io.getstream.webrtc.android.ui.VideoTextureViewRenderer
 import com.phantom.mesh.calling.webrtc.WebRtcClient
 import com.phantom.mesh.calling.ActiveCall
@@ -104,6 +104,35 @@ fun CallOverlayScreen(
     onEndCall: () -> Unit
 ) {
     val context = LocalContext.current
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val camOk = perms[Manifest.permission.CAMERA] ?: true
+        val micOk = perms[Manifest.permission.RECORD_AUDIO] ?: true
+        if (camOk) {
+            webRtcClient?.retryStartCameraIfPermitted()
+        }
+    }
+
+    LaunchedEffect(call.callId, call.callType) {
+        val hasMic = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCam = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        val needsCam = call.callType == CallType.VIDEO
+
+        val needed = mutableListOf<String>()
+        if (!hasMic) needed.add(Manifest.permission.RECORD_AUDIO)
+        if (needsCam && !hasCam) needed.add(Manifest.permission.CAMERA)
+        if (needed.isNotEmpty()) {
+            permissionLauncher.launch(needed.toTypedArray())
+        }
+    }
 
     BackHandler(enabled = true) {
         // Prevent accidental dismissal during active or ringing call
@@ -595,22 +624,108 @@ private val defaultRendererEvents = object : RendererCommon.RendererEvents {
 }
 
 @Composable
+private fun SafeWebRtcVideoRenderer(
+    videoTrack: VideoTrack,
+    eglBaseContext: EglBase.Context,
+    isMirror: Boolean,
+    modifier: Modifier = Modifier
+) {
+    var rendererView by remember { mutableStateOf<VideoTextureViewRenderer?>(null) }
+    var boundTrack by remember { mutableStateOf<VideoTrack?>(null) }
+    var isInitialized by remember { mutableStateOf(false) }
+
+    DisposableEffect(videoTrack, eglBaseContext) {
+        onDispose {
+            val view = rendererView
+            val oldTrack = boundTrack
+            if (view != null && oldTrack != null) {
+                try {
+                    oldTrack.removeSink(view)
+                } catch (_: Throwable) {
+                    // Ignore if MediaStreamTrack was already disposed natively
+                }
+            }
+            boundTrack = null
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            val view = rendererView
+            val oldTrack = boundTrack
+            if (view != null && oldTrack != null) {
+                try {
+                    oldTrack.removeSink(view)
+                } catch (_: Throwable) {}
+            }
+            boundTrack = null
+            if (view != null) {
+                try {
+                    view.pauseVideo()
+                } catch (_: Throwable) {}
+            }
+            rendererView = null
+            isInitialized = false
+        }
+    }
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            VideoTextureViewRenderer(ctx).apply {
+                try {
+                    init(eglBaseContext, defaultRendererEvents)
+                    isInitialized = true
+                } catch (e: Throwable) {
+                    Log.w("CallScreen", "VideoTextureViewRenderer init error: ${e.message}")
+                }
+                try {
+                    setMirror(isMirror)
+                } catch (_: Throwable) {}
+                rendererView = this
+            }
+        },
+        update = { view ->
+            try {
+                view.setMirror(isMirror)
+            } catch (_: Throwable) {}
+
+            if (isInitialized && boundTrack !== videoTrack) {
+                boundTrack?.let { prev ->
+                    try {
+                        prev.removeSink(view)
+                    } catch (_: Throwable) {}
+                }
+                try {
+                    videoTrack.addSink(view)
+                    boundTrack = videoTrack
+                } catch (e: Throwable) {
+                    Log.w("CallScreen", "Failed adding sink to VideoTrack: ${e.message}")
+                }
+            }
+        }
+    )
+}
+
+@Composable
 private fun WebRtcCallVideoContainer(
     call: ActiveCall,
     webRtcClient: WebRtcClient,
     modifier: Modifier = Modifier
 ) {
     val remoteVideoTrack by webRtcClient.remoteVideoTrackFlow.collectAsState()
+    val eglContext = remember(webRtcClient) {
+        try { webRtcClient.eglBase.eglBaseContext } catch (_: Throwable) { null }
+    }
 
     Box(modifier = modifier) {
         val track = remoteVideoTrack
-        if (track != null) {
-            VideoRenderer(
+        if (track != null && eglContext != null) {
+            SafeWebRtcVideoRenderer(
                 modifier = Modifier.fillMaxSize(),
                 videoTrack = track,
-                eglBaseContext = webRtcClient.eglBase.eglBaseContext,
-                videoScalingType = VideoScalingType.SCALE_ASPECT_FILL,
-                rendererEvents = defaultRendererEvents
+                eglBaseContext = eglContext,
+                isMirror = false
             )
         } else {
             Column(
@@ -681,28 +796,17 @@ private fun WebRtcLocalPip(
     modifier: Modifier = Modifier
 ) {
     val localVideoTrack by webRtcClient.localVideoTrackFlow.collectAsState()
-    var textureViewRef by remember { mutableStateOf<VideoTextureViewRenderer?>(null) }
-
-    LaunchedEffect(call.isFrontCamera, textureViewRef) {
-        try {
-            textureViewRef?.setMirror(call.isFrontCamera)
-        } catch (_: Throwable) {}
+    val eglContext = remember(webRtcClient) {
+        try { webRtcClient.eglBase.eglBaseContext } catch (_: Throwable) { null }
     }
 
     val track = localVideoTrack
-    if (track != null) {
-        VideoRenderer(
+    if (track != null && eglContext != null) {
+        SafeWebRtcVideoRenderer(
             modifier = modifier.clip(RoundedCornerShape(14.dp)),
             videoTrack = track,
-            eglBaseContext = webRtcClient.eglBase.eglBaseContext,
-            videoScalingType = VideoScalingType.SCALE_ASPECT_FILL,
-            rendererEvents = defaultRendererEvents,
-            onTextureViewCreated = { renderer ->
-                textureViewRef = renderer
-                try {
-                    renderer.setMirror(call.isFrontCamera)
-                } catch (_: Throwable) {}
-            }
+            eglBaseContext = eglContext,
+            isMirror = call.isFrontCamera
         )
     } else {
         Box(
