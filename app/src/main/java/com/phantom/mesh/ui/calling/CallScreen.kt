@@ -72,8 +72,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
-import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import io.getstream.webrtc.android.compose.VideoRenderer
+import io.getstream.webrtc.android.compose.VideoScalingType
+import io.getstream.webrtc.android.ui.VideoTextureViewRenderer
 import com.phantom.mesh.calling.webrtc.WebRtcClient
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
@@ -587,61 +589,9 @@ fun CallOverlayScreen(
         }
     }
 
-@Composable
-fun WebRtcSurfaceViewRenderer(
-    videoTrack: VideoTrack?,
-    eglBaseContext: EglBase.Context,
-    isOverlay: Boolean = false,
-    isMirror: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    AndroidView(
-        factory = { ctx ->
-            SurfaceViewRenderer(ctx).apply {
-                setEnableHardwareScaler(true)
-                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-                if (isOverlay) {
-                    setZOrderMediaOverlay(true)
-                }
-                setMirror(isMirror)
-                try {
-                    init(eglBaseContext, null)
-                } catch (e: Throwable) {
-                    Log.w("WebRtcRenderer", "Renderer init error: ${e.message}")
-                }
-            }
-        },
-        update = { renderer ->
-            try {
-                renderer.setMirror(isMirror)
-            } catch (_: Throwable) {}
-
-            val previousTrack = renderer.tag as? VideoTrack
-            if (previousTrack != videoTrack) {
-                try {
-                    previousTrack?.removeSink(renderer)
-                } catch (_: Throwable) {}
-                try {
-                    videoTrack?.addSink(renderer)
-                    renderer.tag = videoTrack
-                } catch (_: Throwable) {}
-            }
-        },
-        onRelease = { renderer ->
-            val previousTrack = renderer.tag as? VideoTrack
-            try {
-                previousTrack?.removeSink(renderer)
-            } catch (_: Throwable) {}
-            renderer.tag = null
-            try {
-                renderer.clearImage()
-            } catch (_: Throwable) {}
-            try {
-                renderer.release()
-            } catch (_: Throwable) {}
-        },
-        modifier = modifier
-    )
+private val defaultRendererEvents = object : RendererCommon.RendererEvents {
+    override fun onFirstFrameRendered() {}
+    override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) {}
 }
 
 @Composable
@@ -653,15 +603,16 @@ private fun WebRtcCallVideoContainer(
     val remoteVideoTrack by webRtcClient.remoteVideoTrackFlow.collectAsState()
 
     Box(modifier = modifier) {
-        WebRtcSurfaceViewRenderer(
-            videoTrack = remoteVideoTrack,
-            eglBaseContext = webRtcClient.eglBase.eglBaseContext,
-            isOverlay = false,
-            isMirror = false,
-            modifier = Modifier.fillMaxSize()
-        )
-
-        if (remoteVideoTrack == null) {
+        val track = remoteVideoTrack
+        if (track != null) {
+            VideoRenderer(
+                modifier = Modifier.fillMaxSize(),
+                videoTrack = track,
+                eglBaseContext = webRtcClient.eglBase.eglBaseContext,
+                videoScalingType = VideoScalingType.SCALE_ASPECT_FILL,
+                rendererEvents = defaultRendererEvents
+            )
+        } else {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -730,12 +681,42 @@ private fun WebRtcLocalPip(
     modifier: Modifier = Modifier
 ) {
     val localVideoTrack by webRtcClient.localVideoTrackFlow.collectAsState()
+    var textureViewRef by remember { mutableStateOf<VideoTextureViewRenderer?>(null) }
 
-    WebRtcSurfaceViewRenderer(
-        videoTrack = localVideoTrack,
-        eglBaseContext = webRtcClient.eglBase.eglBaseContext,
-        isOverlay = true,
-        isMirror = call.isFrontCamera,
-        modifier = modifier
-    )
+    LaunchedEffect(call.isFrontCamera, textureViewRef) {
+        try {
+            textureViewRef?.setMirror(call.isFrontCamera)
+        } catch (_: Throwable) {}
+    }
+
+    val track = localVideoTrack
+    if (track != null) {
+        VideoRenderer(
+            modifier = modifier.clip(RoundedCornerShape(14.dp)),
+            videoTrack = track,
+            eglBaseContext = webRtcClient.eglBase.eglBaseContext,
+            videoScalingType = VideoScalingType.SCALE_ASPECT_FILL,
+            rendererEvents = defaultRendererEvents,
+            onTextureViewCreated = { renderer ->
+                textureViewRef = renderer
+                try {
+                    renderer.setMirror(call.isFrontCamera)
+                } catch (_: Throwable) {}
+            }
+        )
+    } else {
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(14.dp))
+                .background(DarkCard),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Person,
+                contentDescription = null,
+                tint = NeonGreen.copy(alpha = 0.5f),
+                modifier = Modifier.size(36.dp)
+            )
+        }
+    }
 }

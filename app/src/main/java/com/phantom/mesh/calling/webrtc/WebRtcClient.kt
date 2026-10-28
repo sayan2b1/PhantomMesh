@@ -22,7 +22,6 @@ import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
-import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -99,69 +98,8 @@ class WebRtcClient(
     private val pendingCandidates = CopyOnWriteArrayList<IceCandidate>()
     private val processedCandidates = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    private val localRenderers = CopyOnWriteArrayList<SurfaceViewRenderer>()
-    private val remoteRenderers = CopyOnWriteArrayList<SurfaceViewRenderer>()
-
     private var isVideoCall = false
     private var isFrontCamera = true
-
-    fun attachLocalRenderer(renderer: SurfaceViewRenderer, isOverlay: Boolean = true) {
-        try {
-            if (isOverlay) {
-                renderer.setZOrderMediaOverlay(true)
-            }
-            try {
-                renderer.init(eglBase.eglBaseContext, null)
-            } catch (e: Exception) {
-                Log.d(TAG, "Local renderer already initialized: ${e.message}")
-            }
-            renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-            renderer.setEnableHardwareScaler(true)
-            renderer.setMirror(isFrontCamera)
-            if (!localRenderers.contains(renderer)) {
-                localRenderers.add(renderer)
-            }
-            localVideoTrack?.addSink(renderer)
-        } catch (e: Exception) {
-            Log.w(TAG, "attachLocalRenderer error: ${e.message}")
-        }
-    }
-
-    fun detachLocalRenderer(renderer: SurfaceViewRenderer) {
-        try {
-            localRenderers.remove(renderer)
-            localVideoTrack?.removeSink(renderer)
-            renderer.clearImage()
-            renderer.release()
-        } catch (_: Exception) {}
-    }
-
-    fun attachRemoteRenderer(renderer: SurfaceViewRenderer) {
-        try {
-            try {
-                renderer.init(eglBase.eglBaseContext, null)
-            } catch (e: Exception) {
-                Log.d(TAG, "Remote renderer already initialized: ${e.message}")
-            }
-            renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-            renderer.setEnableHardwareScaler(true)
-            if (!remoteRenderers.contains(renderer)) {
-                remoteRenderers.add(renderer)
-            }
-            remoteVideoTrack?.addSink(renderer)
-        } catch (e: Exception) {
-            Log.w(TAG, "attachRemoteRenderer error: ${e.message}")
-        }
-    }
-
-    fun detachRemoteRenderer(renderer: SurfaceViewRenderer) {
-        try {
-            remoteRenderers.remove(renderer)
-            remoteVideoTrack?.removeSink(renderer)
-            renderer.clearImage()
-            renderer.release()
-        } catch (_: Exception) {}
-    }
 
     init {
         initPeerConnectionFactory()
@@ -272,11 +210,6 @@ class WebRtcClient(
                 if (track is VideoTrack) {
                     remoteVideoTrack = track
                     _remoteVideoTrackFlow.value = track
-                    for (renderer in remoteRenderers) {
-                        try {
-                            track.addSink(renderer)
-                        } catch (_: Exception) {}
-                    }
                     listener?.onRemoteVideoTrackReceived(track)
                 } else if (track is AudioTrack) {
                     try {
@@ -308,8 +241,16 @@ class WebRtcClient(
         })
 
         // 4. Attach tracks to PeerConnection with stream ID
-        localAudioTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
-        localVideoTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
+        try {
+            localAudioTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed adding local audio track: ${e.message}", e)
+        }
+        try {
+            localVideoTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed adding local video track: ${e.message}", e)
+        }
 
         // 5. If caller, generate initial SDP Offer
         if (isCaller) {
@@ -366,11 +307,6 @@ class WebRtcClient(
 
             localVideoTrack = factory.createVideoTrack("ARDAMSv0", videoSource).apply {
                 setEnabled(true)
-                for (renderer in localRenderers) {
-                    try {
-                        addSink(renderer)
-                    } catch (_: Throwable) {}
-                }
             }
             _localVideoTrackFlow.value = localVideoTrack
         } catch (e: Throwable) {
@@ -435,11 +371,6 @@ class WebRtcClient(
         videoCapturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
             override fun onCameraSwitchDone(isFront: Boolean) {
                 isFrontCamera = isFront
-                for (renderer in localRenderers) {
-                    try {
-                        renderer.setMirror(isFront)
-                    } catch (_: Exception) {}
-                }
             }
             override fun onCameraSwitchError(error: String?) {
                 Log.w(TAG, "Camera switch error: $error")
@@ -571,8 +502,6 @@ class WebRtcClient(
 
         _localVideoTrackFlow.value = null
         _remoteVideoTrackFlow.value = null
-        localRenderers.clear()
-        remoteRenderers.clear()
 
         try {
             videoCapturer?.stopCapture()
@@ -614,9 +543,18 @@ class WebRtcClient(
         peerConnection = null
 
         try {
+            peerConnectionFactory?.dispose()
+        } catch (_: Throwable) {}
+        peerConnectionFactory = null
+
+        try {
             audioDeviceModule?.release()
         } catch (_: Throwable) {}
         audioDeviceModule = null
+
+        try {
+            eglBase.release()
+        } catch (_: Throwable) {}
 
         try {
             audioManager?.mode = AudioManager.MODE_NORMAL

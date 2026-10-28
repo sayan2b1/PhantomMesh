@@ -108,6 +108,7 @@ dependencies {
 
     // ── WebRTC (Real-time Peer-to-Peer Voice & Video Engine) ─────
     implementation(libs.stream.webrtc)
+    implementation(libs.stream.webrtc.compose)
 
     // ── Hilt DI ─────────────────────────────────────────────────
     implementation(libs.hilt.android)
