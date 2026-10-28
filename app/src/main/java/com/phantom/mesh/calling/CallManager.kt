@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -317,7 +318,7 @@ class CallManager @Inject constructor(
         myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
 
         val callId = UUID.randomUUID().toString()
-        val initialMode = if (networkStateManager.isInternetAvailable.value) CallTransportMode.WEBRTC_DIRECT else CallTransportMode.BLUETOOTH_MESH
+        val initialMode = if (networkStateManager.isInternetAvailable.value) CallTransportMode.CLOUD_RELAY else CallTransportMode.BLUETOOTH_MESH
 
         val call = ActiveCall(
             callId = callId,
@@ -357,27 +358,7 @@ class CallManager @Inject constructor(
             Log.w(TAG, "Cloud signaling write failed: ${e.message}")
         }
 
-        // Initialize WebRTC for outgoing call
-        try {
-            webRtcClient?.close()
-            val rtcClient = WebRtcClient(context)
-            webRtcClient = rtcClient
 
-            webRtcSignaling?.stop()
-            val signaling = WebRtcSignalingManager(
-                callId = callId,
-                isCaller = true,
-                peerAddress = cleanTargetAddress,
-                webRtcClient = rtcClient,
-                meshConnectionManagerProvider = meshConnectionManagerProvider,
-                sessionManager = sessionManager
-            )
-            webRtcSignaling = signaling
-            signaling.start()
-            rtcClient.start(isCaller = true, isVideo = false)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed initializing WebRTC for outgoing call: ${e.message}", e)
-        }
 
         // 2. Signal call offer over Mesh (Nearby Connections P2P)
         try {
@@ -429,10 +410,10 @@ class CallManager @Inject constructor(
         peerNetworkProfile = peerNet
 
         val isSameWifi = peerNet != null && LocalNetworkDetector.isSameWifiNetwork(myNetworkProfile, peerNet)
-        val mode = if (networkStateManager.isInternetAvailable.value) {
-            CallTransportMode.WEBRTC_DIRECT
-        } else if (isSameWifi) {
+        val mode = if (isSameWifi) {
             CallTransportMode.SAME_WIFI_LAN
+        } else if (networkStateManager.isInternetAvailable.value) {
+            CallTransportMode.CLOUD_RELAY
         } else {
             CallTransportMode.BLUETOOTH_MESH
         }
@@ -470,27 +451,7 @@ class CallManager @Inject constructor(
             notificationHelperProvider.get().cancelIncomingCallNotification()
             SoundEffectManager.stopRingtone()
 
-            // Initialize WebRTC for incoming call
-            try {
-                webRtcClient?.close()
-                val rtcClient = WebRtcClient(context)
-                webRtcClient = rtcClient
 
-                webRtcSignaling?.stop()
-                val signaling = WebRtcSignalingManager(
-                    callId = call.callId,
-                    isCaller = false,
-                    peerAddress = call.peerAddress,
-                    webRtcClient = rtcClient,
-                    meshConnectionManagerProvider = meshConnectionManagerProvider,
-                    sessionManager = sessionManager
-                )
-                webRtcSignaling = signaling
-                rtcClient.start(isCaller = false, isVideo = false)
-                signaling.start()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed initializing WebRTC for incoming call: ${e.message}", e)
-            }
 
             // Immediately transition local call status to CONNECTED so it cannot be falsely cancelled
             val now = System.currentTimeMillis()
@@ -542,10 +503,10 @@ class CallManager @Inject constructor(
         myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
         val peerNet = peerNetworkProfile
         val isSameWifi = peerNet != null && LocalNetworkDetector.isSameWifiNetwork(myNetworkProfile, peerNet)
-        val mode = if (networkStateManager.isInternetAvailable.value) {
-            CallTransportMode.WEBRTC_DIRECT
-        } else if (isSameWifi) {
+        val mode = if (isSameWifi) {
             CallTransportMode.SAME_WIFI_LAN
+        } else if (networkStateManager.isInternetAvailable.value) {
+            CallTransportMode.CLOUD_RELAY
         } else {
             CallTransportMode.BLUETOOTH_MESH
         }
@@ -565,8 +526,8 @@ class CallManager @Inject constructor(
         durationTimerJob = scope.launch {
             while (isActive && _currentCall.value?.status == CallStatus.CONNECTED) {
                 delay(1000)
-                _currentCall.value = _currentCall.value?.let { current ->
-                    current.copy(durationSeconds = current.durationSeconds + 1)
+                _currentCall.update { current ->
+                    current?.copy(durationSeconds = current.durationSeconds + 1)
                 }
             }
         }
@@ -583,8 +544,8 @@ class CallManager @Inject constructor(
                     }
                 },
                 onVideoReceived = { bmp ->
-                    if (_currentCall.value?.status == CallStatus.CONNECTED) {
-                        _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                    _currentCall.update { current ->
+                        if (current?.status == CallStatus.CONNECTED) current.copy(remoteVideoBitmap = bmp) else current
                     }
                 }
             )
@@ -615,12 +576,10 @@ class CallManager @Inject constructor(
             val active = _currentCall.value
             if (active?.status == CallStatus.CONNECTED && !active.isMuted) {
                 // 1. LAN Direct P2P (<5ms latency)
-                if (mode == CallTransportMode.SAME_WIFI_LAN) {
-                    lanVoipEngine?.sendAudio(pcmChunk)
-                }
+                lanVoipEngine?.sendAudio(pcmChunk)
 
                 // 2. Cloud Relay (Dedicated low-latency audio stream via G.711 mu-law)
-                if (mode == CallTransportMode.CLOUD_RELAY || (mode == CallTransportMode.SAME_WIFI_LAN && networkStateManager.isInternetAvailable.value)) {
+                if (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY) {
                     val muLaw = AudioVoipEngine.G711.linearToMuLaw(pcmChunk)
                     val b64 = Base64.encodeToString(muLaw, Base64.NO_WRAP)
                     sendCloudAudio(call.callId, myRole, b64)
@@ -825,8 +784,10 @@ class CallManager @Inject constructor(
                                 try {
                                     val jpegBytes = Base64.decode(videoB64, Base64.DEFAULT)
                                     val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                                    if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
-                                        _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                                    if (bmp != null) {
+                                        _currentCall.update { current ->
+                                            if (current?.status == CallStatus.CONNECTED) current.copy(remoteVideoBitmap = bmp) else current
+                                        }
                                     }
                                 } catch (e: Exception) {
                                     Log.d(TAG, "Error decoding cloud video: ${e.message}")
@@ -861,8 +822,10 @@ class CallManager @Inject constructor(
                         try {
                             val jpegBytes = Base64.decode(videoB64, Base64.DEFAULT)
                             val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                            if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
-                                _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                            if (bmp != null) {
+                                _currentCall.update { current ->
+                                    if (current?.status == CallStatus.CONNECTED) current.copy(remoteVideoBitmap = bmp) else current
+                                }
                             }
                         } catch (_: Exception) {}
                     }
@@ -943,8 +906,10 @@ class CallManager @Inject constructor(
                     try {
                         val rawBytes = Base64.decode(packet.data, Base64.DEFAULT)
                         val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
-                        if (bmp != null && _currentCall.value?.status == CallStatus.CONNECTED) {
-                            _currentCall.value = _currentCall.value?.copy(remoteVideoBitmap = bmp)
+                        if (bmp != null) {
+                            _currentCall.update { current ->
+                                if (current?.status == CallStatus.CONNECTED) current.copy(remoteVideoBitmap = bmp) else current
+                            }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed decoding incoming mesh video frame: ${e.message}")
