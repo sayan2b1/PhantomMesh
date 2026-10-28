@@ -4,8 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -13,9 +11,9 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.StreamConfigurationMap
-import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import android.util.Size
 import android.view.Surface
@@ -25,91 +23,80 @@ import java.io.ByteArrayOutputStream
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Enterprise-grade, Crash-Proof Camera2 Capture and Streaming Engine for PhantomMesh.
- *
- * Engineered specifically to solve OEM camera HAL incompatibility across diverse hardware
- * (including OnePlus 11R Sony IMX890, Samsung Galaxy F34, Pixel, Xiaomi):
- * 1. Dynamic resolution negotiation: Queries [StreamConfigurationMap] for verified supported sizes;
- *    never hardcodes resolutions that fail [CameraCaptureSession.StateCallback.onConfigureFailed].
- * 2. Hardware-accelerated GPU preview on [TextureView].
- * 3. High-efficiency frame sampling (240x180 @ 55% JPEG, ~2.5KB-3.5KB per frame) for sub-5ms LAN
- *    and instant Cloud Relay transmission without buffer bloat.
- * 4. Dual-mode frame extraction: Direct GPU [TextureView.getBitmap] sampling with fallback to
- *    HAL-verified [ImageReader].
- */
 object CameraVideoEngine {
     private const val TAG = "CameraVideoEngine"
     private const val TARGET_SAMPLE_WIDTH = 240
     private const val TARGET_SAMPLE_HEIGHT = 180
-    private const val FRAME_INTERVAL_MS = 160L // ~6.2 fps: optimal for real-time mesh, LAN, and cloud streaming
+    private const val FRAME_INTERVAL_MS = 160L
 
-    private val mainHandler = Handler(android.os.Looper.getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val cameraLock = Any()
+
+    private var appContext: Context? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var imageReader: ImageReader? = null
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
     private var activePreviewSurface: Surface? = null
+    private var configuredSurfaceTexture: SurfaceTexture? = null
     private var currentSurfaceTexture: SurfaceTexture? = null
-    private var dummySurfaceTexture: SurfaceTexture? = null
     private var activeTextureView: WeakReference<TextureView>? = null
     private var isFrontCamera: Boolean = true
     private var onFrameCapturedCallback: ((ByteArray) -> Unit)? = null
 
     private var previewSize: Size = Size(640, 480)
-    private var jpegReaderSize: Size = Size(640, 480)
 
     private val isRunning = AtomicBoolean(false)
     private val isOpening = AtomicBoolean(false)
+    private val isConfiguring = AtomicBoolean(false)
     private val isCapturing = AtomicBoolean(false)
 
-    // Periodic frame sampler pulling fresh frames without stalling Camera2 preview
+    // Extracts Bitmap strictly on the Main UI thread (required by Android libhwui for TextureView)
+    // and compresses JPEG on the background thread.
     private val frameSamplerRunnable = object : Runnable {
         override fun run() {
             if (!isRunning.get()) return
 
-            try {
-                // Priority 1: Extract frame directly from active TextureView GPU buffer
-                val tv = activeTextureView?.get()
-                if (tv != null && tv.isAvailable) {
-                    val bmp = tv.getBitmap(TARGET_SAMPLE_WIDTH, TARGET_SAMPLE_HEIGHT)
-                    if (bmp != null) {
-                        try {
-                            val baos = ByteArrayOutputStream()
-                            bmp.compress(Bitmap.CompressFormat.JPEG, 55, baos)
-                            val bytes = baos.toByteArray()
-                            if (bytes.isNotEmpty()) {
-                                onFrameCapturedCallback?.invoke(bytes)
-                            }
-                        } finally {
-                            bmp.recycle()
+            val tv = activeTextureView?.get()
+            if (tv != null && tv.isAvailable && tv.width > 0 && tv.height > 0 && isCapturing.compareAndSet(false, true)) {
+                mainHandler.post {
+                    var bmp: Bitmap? = null
+                    try {
+                        if (isRunning.get() && tv.isAvailable && tv.width > 0 && tv.height > 0) {
+                            bmp = tv.getBitmap(TARGET_SAMPLE_WIDTH, TARGET_SAMPLE_HEIGHT)
                         }
+                    } catch (e: Throwable) {
+                        Log.d(TAG, "Main thread getBitmap skip: ${e.message}")
                     }
-                } else {
-                    // Priority 2: Fallback single capture request if TextureView is offscreen
-                    val session = captureSession
-                    val camera = cameraDevice
-                    val reader = imageReader
-                    if (session != null && camera != null && reader != null && isCapturing.compareAndSet(false, true)) {
-                        try {
-                            val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_VIDEO_SNAPSHOT).apply {
-                                addTarget(reader.surface)
-                                set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+
+                    val capturedBmp = bmp
+                    val bg = backgroundHandler
+                    if (capturedBmp != null && bg != null && isRunning.get()) {
+                        bg.post {
+                            try {
+                                val baos = ByteArrayOutputStream()
+                                capturedBmp.compress(Bitmap.CompressFormat.JPEG, 55, baos)
+                                val bytes = baos.toByteArray()
+                                if (bytes.isNotEmpty() && isRunning.get()) {
+                                    onFrameCapturedCallback?.invoke(bytes)
+                                }
+                            } catch (_: Throwable) {
+                            } finally {
+                                try { capturedBmp.recycle() } catch (_: Throwable) {}
+                                isCapturing.set(false)
                             }
-                            session.capture(req.build(), null, backgroundHandler)
-                        } catch (e: Exception) {
-                            isCapturing.set(false)
                         }
+                    } else {
+                        try { capturedBmp?.recycle() } catch (_: Throwable) {}
+                        isCapturing.set(false)
                     }
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "Frame sampling skip: ${e.message}")
             }
 
-            backgroundHandler?.postDelayed(this, FRAME_INTERVAL_MS)
+            if (isRunning.get()) {
+                backgroundHandler?.postDelayed(this, FRAME_INTERVAL_MS)
+            }
         }
     }
 
@@ -120,34 +107,44 @@ object CameraVideoEngine {
         onFrameCaptured: (ByteArray) -> Unit
     ) {
         synchronized(cameraLock) {
-            currentSurfaceTexture = surfaceTexture
+            appContext = context.applicationContext
+            if (surfaceTexture != null) {
+                currentSurfaceTexture = surfaceTexture
+            }
             isFrontCamera = frontCamera
             onFrameCapturedCallback = onFrameCaptured
 
-            if (isRunning.getAndSet(true)) {
-                if (cameraDevice != null) {
-                    startCaptureSession()
-                } else if (!isOpening.get()) {
-                    openCamera(context)
-                }
-                return
+            startBackgroundThread()
+
+            if (!isRunning.getAndSet(true)) {
+                isOpening.set(false)
+                isConfiguring.set(false)
+                isCapturing.set(false)
             }
 
-            startBackgroundThread()
-            openCamera(context)
+            // Only open camera once the live TextureView SurfaceTexture is attached
+            if (currentSurfaceTexture != null) {
+                if (cameraDevice == null && !isOpening.get()) {
+                    openCamera(context.applicationContext)
+                } else if (cameraDevice != null) {
+                    startCaptureSession()
+                }
+            }
         }
     }
 
-    /**
-     * Attaches the live TextureView preview component from Compose.
-     */
     fun attachPreview(textureView: TextureView, surfaceTexture: SurfaceTexture) {
         synchronized(cameraLock) {
             activeTextureView = WeakReference(textureView)
             currentSurfaceTexture = surfaceTexture
+            val ctx = appContext ?: textureView.context.applicationContext
+            appContext = ctx
 
             if (isRunning.get()) {
-                if (cameraDevice != null) {
+                startBackgroundThread()
+                if (cameraDevice == null && !isOpening.get()) {
+                    openCamera(ctx)
+                } else if (cameraDevice != null && configuredSurfaceTexture !== surfaceTexture) {
                     startCaptureSession()
                 }
             }
@@ -156,28 +153,25 @@ object CameraVideoEngine {
 
     fun detachPreview() {
         synchronized(cameraLock) {
+            backgroundHandler?.removeCallbacks(frameSamplerRunnable)
             activeTextureView = null
             currentSurfaceTexture = null
-            try {
-                activePreviewSurface?.release()
-            } catch (_: Exception) {}
-            activePreviewSurface = null
+            configuredSurfaceTexture = null
+            closeCamera()
         }
     }
 
-    /**
-     * Backwards-compatible preview surface updater.
-     */
     fun updatePreviewSurface(context: Context, surfaceTexture: SurfaceTexture?) {
         synchronized(cameraLock) {
-            if (currentSurfaceTexture == surfaceTexture) return
+            appContext = context.applicationContext
+            if (currentSurfaceTexture === surfaceTexture) return
             currentSurfaceTexture = surfaceTexture
 
-            if (isRunning.get()) {
+            if (isRunning.get() && surfaceTexture != null) {
                 if (cameraDevice != null) {
                     startCaptureSession()
                 } else if (!isOpening.get()) {
-                    openCamera(context)
+                    openCamera(context.applicationContext)
                 }
             }
         }
@@ -185,11 +179,14 @@ object CameraVideoEngine {
 
     fun switchCamera(context: Context, frontCamera: Boolean) {
         synchronized(cameraLock) {
+            appContext = context.applicationContext
             if (isFrontCamera == frontCamera) return
             isFrontCamera = frontCamera
             if (isRunning.get()) {
                 closeCamera()
-                openCamera(context)
+                if (currentSurfaceTexture != null) {
+                    openCamera(context.applicationContext)
+                }
             }
         }
     }
@@ -205,9 +202,9 @@ object CameraVideoEngine {
         backgroundThread?.quitSafely()
         try {
             backgroundThread?.join(500)
-            backgroundThread = null
-            backgroundHandler = null
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
+        backgroundThread = null
+        backgroundHandler = null
     }
 
     @SuppressLint("MissingPermission")
@@ -222,10 +219,7 @@ object CameraVideoEngine {
             return
         }
 
-        if (isOpening.getAndSet(true)) {
-            Log.d(TAG, "Camera open already in progress")
-            return
-        }
+        if (isOpening.getAndSet(true)) return
 
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
         if (cameraManager == null) {
@@ -253,51 +247,14 @@ object CameraVideoEngine {
                 selectedCameraId = cameraManager.cameraIdList.firstOrNull()
             }
             if (selectedCameraId == null) {
-                Log.w(TAG, "No camera found on device")
                 isOpening.set(false)
                 return
             }
 
-            // Query verified supported sizes from hardware configuration map
             val characteristics = cameraManager.getCameraCharacteristics(selectedCameraId)
             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             if (map != null) {
                 previewSize = chooseOptimalPreviewSize(map)
-                jpegReaderSize = chooseOptimalJpegSize(map)
-                Log.i(TAG, "Negotiated Camera2 sizes: preview=$previewSize, jpegReader=$jpegReaderSize")
-            }
-
-            // Create ImageReader for fallback frame capture with hardware-verified size
-            try {
-                imageReader?.close()
-            } catch (_: Exception) {}
-
-            imageReader = ImageReader.newInstance(
-                jpegReaderSize.width,
-                jpegReaderSize.height,
-                ImageFormat.JPEG,
-                2
-            ).apply {
-                setOnImageAvailableListener({ reader ->
-                    try {
-                        val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                        try {
-                            val buffer = image.planes[0].buffer
-                            val bytes = ByteArray(buffer.remaining())
-                            buffer.get(bytes)
-
-                            // Downsample fallback image to target resolution if needed
-                            val downsampled = downsampleJpegIfNeeded(bytes, TARGET_SAMPLE_WIDTH, TARGET_SAMPLE_HEIGHT)
-                            onFrameCapturedCallback?.invoke(downsampled)
-                        } finally {
-                            image.close()
-                            isCapturing.set(false)
-                        }
-                    } catch (e: Exception) {
-                        isCapturing.set(false)
-                        Log.d(TAG, "Error processing ImageReader frame: ${e.message}")
-                    }
-                }, backgroundHandler)
             }
 
             cameraManager.openCamera(selectedCameraId, object : CameraDevice.StateCallback() {
@@ -305,7 +262,7 @@ object CameraVideoEngine {
                     synchronized(cameraLock) {
                         isOpening.set(false)
                         if (!isRunning.get()) {
-                            try { camera.close() } catch (_: Exception) {}
+                            try { camera.close() } catch (_: Throwable) {}
                             return
                         }
                         cameraDevice = camera
@@ -316,8 +273,8 @@ object CameraVideoEngine {
                 override fun onDisconnected(camera: CameraDevice) {
                     synchronized(cameraLock) {
                         isOpening.set(false)
-                        try { camera.close() } catch (_: Exception) {}
-                        if (cameraDevice == camera) {
+                        try { camera.close() } catch (_: Throwable) {}
+                        if (cameraDevice === camera) {
                             cameraDevice = null
                         }
                     }
@@ -327,14 +284,14 @@ object CameraVideoEngine {
                     synchronized(cameraLock) {
                         isOpening.set(false)
                         Log.e(TAG, "Camera open error: $error")
-                        try { camera.close() } catch (_: Exception) {}
-                        if (cameraDevice == camera) {
+                        try { camera.close() } catch (_: Throwable) {}
+                        if (cameraDevice === camera) {
                             cameraDevice = null
                         }
                     }
                 }
             }, backgroundHandler)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             isOpening.set(false)
             Log.e(TAG, "Failed to open camera: ${e.message}", e)
         }
@@ -342,7 +299,6 @@ object CameraVideoEngine {
 
     private fun chooseOptimalPreviewSize(map: StreamConfigurationMap): Size {
         val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return Size(640, 480)
-        // Prefer standard 640x480 (VGA) or closest 4:3 / 16:9 resolution under 1280x720
         return sizes.firstOrNull { it.width == 640 && it.height == 480 }
             ?: sizes.filter { it.width <= 1280 && it.height <= 720 }
                 .minByOrNull { Math.abs((it.width * it.height) - (640 * 480)) }
@@ -350,117 +306,74 @@ object CameraVideoEngine {
             ?: Size(640, 480)
     }
 
-    private fun chooseOptimalJpegSize(map: StreamConfigurationMap): Size {
-        val sizes = map.getOutputSizes(ImageFormat.JPEG) ?: return Size(640, 480)
-        // Find smallest supported JPEG size that is >= 320x240
-        return sizes.filter { it.width >= 320 && it.height >= 240 }
-            .minByOrNull { it.width * it.height }
-            ?: sizes.firstOrNull()
-            ?: Size(640, 480)
-    }
-
-    private fun downsampleJpegIfNeeded(rawBytes: ByteArray, maxW: Int, maxH: Int): ByteArray {
-        return try {
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, opts)
-
-            if (opts.outWidth <= maxW && opts.outHeight <= maxH) {
-                return rawBytes
-            }
-
-            val scale = maxOf(opts.outWidth / maxW, opts.outHeight / maxH, 1)
-            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = scale }
-            val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts) ?: return rawBytes
-
-            val scaled = if (bmp.width > maxW || bmp.height > maxH) {
-                Bitmap.createScaledBitmap(bmp, maxW, maxH, true).also {
-                    if (it != bmp) bmp.recycle()
-                }
-            } else {
-                bmp
-            }
-
-            val stream = ByteArrayOutputStream()
-            scaled.compress(Bitmap.CompressFormat.JPEG, 55, stream)
-            scaled.recycle()
-            stream.toByteArray()
-        } catch (_: Exception) {
-            rawBytes
-        }
-    }
-
     private fun startCaptureSession() {
         synchronized(cameraLock) {
             val camera = cameraDevice ?: return
             if (!isRunning.get()) return
 
+            val texture = currentSurfaceTexture ?: return
+            if (isConfiguring.get()) return
+            if (captureSession != null && configuredSurfaceTexture === texture) return
+
             try {
-                // Stop previous capture loop and session cleanly
+                isConfiguring.set(true)
                 backgroundHandler?.removeCallbacks(frameSamplerRunnable)
+
                 try {
                     captureSession?.stopRepeating()
                     captureSession?.close()
-                } catch (_: Exception) {}
+                } catch (_: Throwable) {}
                 captureSession = null
 
                 try {
                     activePreviewSurface?.release()
-                } catch (_: Exception) {}
+                } catch (_: Throwable) {}
                 activePreviewSurface = null
-
-                // Ensure a valid TextureView preview surface exists before configuring session
-                var texture = currentSurfaceTexture
-                if (texture == null) {
-                    if (dummySurfaceTexture == null) {
-                        dummySurfaceTexture = SurfaceTexture(0)
-                    }
-                    texture = dummySurfaceTexture
-                }
-
-                if (texture == null) {
-                    Log.d(TAG, "TextureView preview surface not yet attached; awaiting attachPreview()")
-                    return
-                }
 
                 texture.setDefaultBufferSize(previewSize.width, previewSize.height)
                 val previewSurface = Surface(texture)
+                if (!previewSurface.isValid) {
+                    previewSurface.release()
+                    isConfiguring.set(false)
+                    return
+                }
                 activePreviewSurface = previewSurface
-
-                val surfaces = mutableListOf<Surface>(previewSurface)
-                imageReader?.surface?.let { surfaces.add(it) }
+                configuredSurfaceTexture = texture
 
                 val sessionCallback = object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         synchronized(cameraLock) {
-                            if (!isRunning.get() || cameraDevice == null) {
-                                try { session.close() } catch (_: Exception) {}
+                            isConfiguring.set(false)
+                            if (!isRunning.get() || cameraDevice == null || !previewSurface.isValid) {
+                                try { session.close() } catch (_: Throwable) {}
                                 return
                             }
                             captureSession = session
                             try {
-                                // Repeating request targets previewSurface (Hardware GPU rendering)
                                 val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                                     addTarget(previewSurface)
                                     set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                                 }
                                 session.setRepeatingRequest(requestBuilder.build(), null, backgroundHandler)
-                                Log.i(TAG, "Camera preview session configured successfully ($previewSize)")
-
-                                // Start periodic frame sampling loop
-                                backgroundHandler?.post(frameSamplerRunnable)
-                            } catch (e: Exception) {
+                                backgroundHandler?.removeCallbacks(frameSamplerRunnable)
+                                backgroundHandler?.postDelayed(frameSamplerRunnable, FRAME_INTERVAL_MS)
+                            } catch (e: Throwable) {
                                 Log.e(TAG, "Failed setting repeating request: ${e.message}", e)
                             }
                         }
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e(TAG, "Camera capture session configuration failed")
+                        synchronized(cameraLock) {
+                            isConfiguring.set(false)
+                            Log.e(TAG, "Camera capture session configuration failed")
+                        }
                     }
                 }
 
-                camera.createCaptureSession(surfaces, sessionCallback, backgroundHandler)
-            } catch (e: Exception) {
+                camera.createCaptureSession(listOf(previewSurface), sessionCallback, backgroundHandler)
+            } catch (e: Throwable) {
+                isConfiguring.set(false)
                 Log.e(TAG, "Failed starting capture session: ${e.message}", e)
             }
         }
@@ -469,48 +382,39 @@ object CameraVideoEngine {
     private fun closeCamera() {
         synchronized(cameraLock) {
             backgroundHandler?.removeCallbacks(frameSamplerRunnable)
+            mainHandler.removeCallbacksAndMessages(null)
+            isConfiguring.set(false)
+            isCapturing.set(false)
 
             try {
                 captureSession?.stopRepeating()
+            } catch (_: Throwable) {}
+            try {
                 captureSession?.close()
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
             captureSession = null
 
             try {
-                activePreviewSurface?.release()
-            } catch (_: Exception) {}
-            activePreviewSurface = null
-
-            try {
                 cameraDevice?.close()
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
             cameraDevice = null
 
             try {
-                imageReader?.close()
-            } catch (_: Exception) {}
-            imageReader = null
-
-            try {
-                dummySurfaceTexture?.release()
-            } catch (_: Exception) {}
-            dummySurfaceTexture = null
+                activePreviewSurface?.release()
+            } catch (_: Throwable) {}
+            activePreviewSurface = null
+            configuredSurfaceTexture = null
         }
     }
 
     fun stop() {
         if (!isRunning.getAndSet(false)) return
         isOpening.set(false)
-        isCapturing.set(false)
         synchronized(cameraLock) {
             closeCamera()
             stopBackgroundThread()
             activeTextureView = null
             currentSurfaceTexture = null
-            try {
-                activePreviewSurface?.release()
-            } catch (_: Exception) {}
-            activePreviewSurface = null
             onFrameCapturedCallback = null
             Log.i(TAG, "CameraVideoEngine stopped")
         }
