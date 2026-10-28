@@ -256,7 +256,7 @@ class CallManager @Inject constructor(
                                 onCallEndedRemote("Call Declined")
                             }
                         }
-                        "ended" -> {
+                        "ended", "cancelled" -> {
                             if (current.status != CallStatus.ENDED) {
                                 onCallEndedRemote("Call Ended")
                             }
