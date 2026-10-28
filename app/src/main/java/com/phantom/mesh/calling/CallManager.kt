@@ -374,7 +374,7 @@ class CallManager @Inject constructor(
             )
             webRtcSignaling = signaling
             signaling.start()
-            rtcClient.start(isCaller = true, isVideo = callType == CallType.VIDEO)
+            rtcClient.start(isCaller = true, isVideo = false)
         } catch (e: Exception) {
             Log.e(TAG, "Failed initializing WebRTC for outgoing call: ${e.message}", e)
         }
@@ -486,7 +486,7 @@ class CallManager @Inject constructor(
                     sessionManager = sessionManager
                 )
                 webRtcSignaling = signaling
-                rtcClient.start(isCaller = false, isVideo = call.callType == CallType.VIDEO)
+                rtcClient.start(isCaller = false, isVideo = false)
                 signaling.start()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed initializing WebRTC for incoming call: ${e.message}", e)
@@ -571,18 +571,16 @@ class CallManager @Inject constructor(
             }
         }
 
-        // WebRTC P2P direct UDP media handles all audio/video when active
-        if (webRtcClient != null) {
-            Log.i(TAG, "WebRTC active: hardware audio & video streaming directly via P2P UDP")
-            return
-        }
+        val current = _currentCall.value ?: return
 
-        // Mode 1: SAME_WIFI_LAN direct P2P UDP engine (<5ms, zero data)
-        if (mode == CallTransportMode.SAME_WIFI_LAN && peerNet != null && peerNet.localIp.isNotBlank()) {
+        // 1. Start LAN UDP engine when on same Wi-Fi (handles ultra-low-latency LAN video & fallback audio)
+        if (isSameWifi && peerNet != null && peerNet.localIp.isNotBlank()) {
             lanVoipEngine?.stop()
             lanVoipEngine = LanVoipEngine(
                 onAudioReceived = { pcm ->
-                    audioVoipEngine?.playRemoteAudio(pcm)
+                    if (webRtcClient == null) {
+                        audioVoipEngine?.playRemoteAudio(pcm)
+                    }
                 },
                 onVideoReceived = { bmp ->
                     if (_currentCall.value?.status == CallStatus.CONNECTED) {
@@ -593,15 +591,17 @@ class CallManager @Inject constructor(
             lanVoipEngine?.start(peerIp = peerNet.localIp)
         }
 
-        // Mode 2: CLOUD_RELAY via Firebase Firestore (Cross-network: Wi-Fi to Mobile Data & LAN fallback)
-        if (mode == CallTransportMode.CLOUD_RELAY || networkStateManager.isInternetAvailable.value) {
-            val current = _currentCall.value ?: return
+        // 2. Start Cloud Media Listener whenever internet is available (delivers Cloud Relay video frames & fallback audio)
+        if (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY) {
             startCloudMediaListener(current)
         }
 
-        val current = _currentCall.value ?: return
-        startAudioStream(current, mode)
+        // 3. Only start fallback PCM AudioVoipEngine if WebRTC audio is not active
+        if (webRtcClient == null) {
+            startAudioStream(current, mode)
+        }
 
+        // 4. Always use Crash-Proof CameraVideoEngine for Video Calls
         if (current.callType == CallType.VIDEO && current.isVideoEnabled) {
             startVideoStream(current, mode)
         }
@@ -647,6 +647,13 @@ class CallManager @Inject constructor(
         audioVoipEngine?.start()
     }
 
+    fun startVideoStreamIfPermitted() {
+        val current = _currentCall.value ?: return
+        if (current.status == CallStatus.CONNECTED && current.callType == CallType.VIDEO && current.isVideoEnabled) {
+            startVideoStream(current, current.transportMode)
+        }
+    }
+
     private fun startVideoStream(call: ActiveCall, mode: CallTransportMode) {
         val myRole = if (call.isIncoming) "callee" else "caller"
 
@@ -657,18 +664,16 @@ class CallManager @Inject constructor(
         ) { jpegBytes ->
             val active = _currentCall.value
             if (active?.status == CallStatus.CONNECTED && active.isVideoEnabled) {
-                // 1. LAN Direct P2P (<5ms latency, MTU-safe chunks)
-                if (mode == CallTransportMode.SAME_WIFI_LAN) {
-                    lanVoipEngine?.sendVideo(jpegBytes)
-                }
+                // 1. LAN Direct P2P if active
+                lanVoipEngine?.sendVideo(jpegBytes)
 
-                // 2. Cloud Relay (Dedicated video stream document)
-                if (mode == CallTransportMode.CLOUD_RELAY || (mode == CallTransportMode.SAME_WIFI_LAN && networkStateManager.isInternetAvailable.value)) {
+                // 2. Cloud Relay whenever internet is available
+                if (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY) {
                     val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
                     sendCloudVideo(call.callId, myRole, b64)
                 }
 
-                // 3. Bluetooth Mesh P2P
+                // 3. Bluetooth Mesh P2P if peers connected
                 if (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers()) {
                     try {
                         val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
@@ -981,14 +986,10 @@ class CallManager @Inject constructor(
     fun toggleVideo() {
         _currentCall.value = _currentCall.value?.let { current ->
             val nextEnabled = !current.isVideoEnabled
-            if (webRtcClient != null) {
-                webRtcClient?.setVideoEnabled(nextEnabled)
+            if (!nextEnabled) {
+                CameraVideoEngine.stop()
             } else {
-                if (!nextEnabled) {
-                    CameraVideoEngine.stop()
-                } else {
-                    startVideoStream(current, current.transportMode)
-                }
+                startVideoStream(current, current.transportMode)
             }
             current.copy(isVideoEnabled = nextEnabled)
         }
@@ -1000,11 +1001,7 @@ class CallManager @Inject constructor(
     fun flipCamera() {
         _currentCall.value = _currentCall.value?.let { current ->
             val nextFront = !current.isFrontCamera
-            if (webRtcClient != null) {
-                webRtcClient?.switchCamera()
-            } else {
-                CameraVideoEngine.switchCamera(context, nextFront)
-            }
+            CameraVideoEngine.switchCamera(context, nextFront)
             current.copy(isFrontCamera = nextFront)
         }
     }

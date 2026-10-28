@@ -267,6 +267,7 @@ class MainActivity : ComponentActivity() {
                         onSpeakerToggle = { callManager.toggleSpeaker() },
                         onVideoToggle = { callManager.toggleVideo() },
                         onFlipCamera = { callManager.flipCamera() },
+                        onCameraPermissionGranted = { callManager.startVideoStreamIfPermitted() },
                         onAccept = {
                             val hasAudio = ContextCompat.checkSelfPermission(
                                 this@MainActivity,

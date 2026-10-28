@@ -72,10 +72,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import org.webrtc.EglBase
-import org.webrtc.RendererCommon
-import org.webrtc.VideoTrack
-import io.getstream.webrtc.android.ui.VideoTextureViewRenderer
 import com.phantom.mesh.calling.webrtc.WebRtcClient
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallStatus
@@ -100,6 +96,7 @@ fun CallOverlayScreen(
     onSpeakerToggle: () -> Unit,
     onVideoToggle: () -> Unit,
     onFlipCamera: () -> Unit,
+    onCameraPermissionGranted: (() -> Unit)? = null,
     onAccept: () -> Unit,
     onEndCall: () -> Unit
 ) {
@@ -111,7 +108,7 @@ fun CallOverlayScreen(
         val camOk = perms[Manifest.permission.CAMERA] ?: true
         val micOk = perms[Manifest.permission.RECORD_AUDIO] ?: true
         if (camOk) {
-            webRtcClient?.retryStartCameraIfPermitted()
+            onCameraPermissionGranted?.invoke()
         }
     }
 
@@ -166,87 +163,83 @@ fun CallOverlayScreen(
                             .background(Color(0xFF0A121D))
                             .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
                     ) {
-                        // Remote Video Stream Container (Live WebRTC SurfaceViewRenderer or Legacy Frames)
-                        if (webRtcClient != null) {
-                            WebRtcCallVideoContainer(
-                                call = call,
-                                webRtcClient = webRtcClient,
-                                modifier = Modifier.fillMaxSize()
+                        // Remote Video Stream Container (Direct Frame Stream via LAN, Cloud & Mesh)
+                        val remoteBmp = call.remoteVideoBitmap
+                        var imageBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
+                        if (remoteBmp != null && !remoteBmp.isRecycled) {
+                            try {
+                                imageBitmap = remoteBmp.asImageBitmap()
+                            } catch (_: Exception) {}
+                        }
+
+                        if (imageBitmap != null) {
+                            Image(
+                                bitmap = imageBitmap,
+                                contentDescription = "Remote Video Stream",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
                             )
-                        } else {
-                            val remoteBmp = call.remoteVideoBitmap
-                            var imageBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
-                            if (remoteBmp != null && !remoteBmp.isRecycled) {
-                                try {
-                                    imageBitmap = remoteBmp.asImageBitmap()
-                                } catch (_: Exception) {}
+
+                            // Cybernetic stream badge
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(16.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(DarkBackground.copy(alpha = 0.75f))
+                                    .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(NeonGreen)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = when (call.transportMode) {
+                                            CallTransportMode.SAME_WIFI_LAN -> "LOCAL WI-FI DIRECT (P2P LAN)"
+                                            CallTransportMode.BLUETOOTH_MESH -> "BLE MESH DIRECT P2P"
+                                            else -> "ENCRYPTED VIDEO STREAM"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = NeonGreen,
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
                             }
-
-                            if (imageBitmap != null) {
-                                Image(
-                                    bitmap = imageBitmap,
-                                    contentDescription = "Remote Video Stream",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
+                        } else {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = NeonCyan.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(96.dp)
                                 )
-
-                                // Cybernetic stream badge
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomStart)
-                                        .padding(16.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(DarkBackground.copy(alpha = 0.75f))
-                                        .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(8.dp)
-                                                .clip(CircleShape)
-                                                .background(NeonGreen)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = if (call.transportMode == CallTransportMode.SAME_WIFI_LAN) "LOCAL WI-FI DIRECT (P2P LAN)" else "CLOUD RELAY STREAM",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = NeonGreen,
-                                            fontSize = 9.sp,
-                                            fontFamily = FontFamily.Monospace
-                                        )
-                                    }
-                                }
-                            } else {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = null,
-                                        tint = NeonCyan.copy(alpha = 0.5f),
-                                        modifier = Modifier.size(96.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    Text(
-                                        text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = NeonCyan.copy(alpha = 0.7f),
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp,
-                                        letterSpacing = 1.sp
-                                    )
-                                    Text(
-                                        text = "Connecting Cloud & Mesh Video Engine",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = TextMuted,
-                                        fontSize = 9.sp
-                                    )
-                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = NeonCyan.copy(alpha = 0.7f),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 10.sp,
+                                    letterSpacing = 1.sp
+                                )
+                                Text(
+                                    text = "Connecting Cloud & Mesh Video Engine",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextMuted,
+                                    fontSize = 9.sp
+                                )
                             }
                         }
 
@@ -256,41 +249,40 @@ fun CallOverlayScreen(
                                 .align(Alignment.TopEnd)
                                 .padding(16.dp)
                                 .size(width = 110.dp, height = 150.dp)
+                                .clip(RoundedCornerShape(14.dp))
                                 .background(DarkCard)
                                 .border(1.5.dp, NeonGreen.copy(alpha = 0.6f), RoundedCornerShape(14.dp)),
                             contentAlignment = Alignment.Center
                         ) {
                             if (call.isVideoEnabled) {
-                                if (webRtcClient != null) {
-                                    WebRtcLocalPip(
-                                        call = call,
-                                        webRtcClient = webRtcClient,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    AndroidView(
-                                        factory = { ctx ->
-                                            TextureView(ctx).apply {
-                                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                                    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                                                        try {
-                                                            CameraVideoEngine.attachPreview(this@apply, surface)
-                                                        } catch (_: Exception) {}
-                                                    }
-                                                    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
-                                                    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                                                        try {
-                                                            CameraVideoEngine.detachPreview()
-                                                        } catch (_: Exception) {}
-                                                        return true
-                                                    }
-                                                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+                                AndroidView(
+                                    factory = { ctx ->
+                                        TextureView(ctx).apply {
+                                            scaleX = if (call.isFrontCamera) -1f else 1f
+                                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                                                    try {
+                                                        CameraVideoEngine.attachPreview(this@apply, surface)
+                                                    } catch (_: Exception) {}
                                                 }
+                                                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
+                                                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                                                    try {
+                                                        CameraVideoEngine.detachPreview()
+                                                    } catch (_: Exception) {}
+                                                    return true
+                                                }
+                                                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
                                             }
-                                        },
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
+                                        }
+                                    },
+                                    update = { textureView ->
+                                        try {
+                                            textureView.scaleX = if (call.isFrontCamera) -1f else 1f
+                                        } catch (_: Exception) {}
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
 
                                 Box(
                                     modifier = Modifier
@@ -617,210 +609,3 @@ fun CallOverlayScreen(
             }
         }
     }
-
-private val defaultRendererEvents = object : RendererCommon.RendererEvents {
-    override fun onFirstFrameRendered() {}
-    override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) {}
-}
-
-@Composable
-private fun SafeWebRtcVideoRenderer(
-    videoTrack: VideoTrack,
-    eglBaseContext: EglBase.Context,
-    isMirror: Boolean,
-    modifier: Modifier = Modifier
-) {
-    var rendererView by remember { mutableStateOf<VideoTextureViewRenderer?>(null) }
-    var boundTrack by remember { mutableStateOf<VideoTrack?>(null) }
-    var isInitialized by remember { mutableStateOf(false) }
-
-    DisposableEffect(videoTrack, eglBaseContext) {
-        onDispose {
-            val view = rendererView
-            val oldTrack = boundTrack
-            if (view != null && oldTrack != null) {
-                try {
-                    oldTrack.removeSink(view)
-                } catch (_: Throwable) {
-                    // Ignore if MediaStreamTrack was already disposed natively
-                }
-            }
-            boundTrack = null
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            val view = rendererView
-            val oldTrack = boundTrack
-            if (view != null && oldTrack != null) {
-                try {
-                    oldTrack.removeSink(view)
-                } catch (_: Throwable) {}
-            }
-            boundTrack = null
-            if (view != null) {
-                try {
-                    view.pauseVideo()
-                } catch (_: Throwable) {}
-            }
-            rendererView = null
-            isInitialized = false
-        }
-    }
-
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            VideoTextureViewRenderer(ctx).apply {
-                try {
-                    init(eglBaseContext, defaultRendererEvents)
-                    isInitialized = true
-                } catch (e: Throwable) {
-                    Log.w("CallScreen", "VideoTextureViewRenderer init error: ${e.message}")
-                }
-                try {
-                    setMirror(isMirror)
-                } catch (_: Throwable) {}
-                rendererView = this
-            }
-        },
-        update = { view ->
-            try {
-                view.setMirror(isMirror)
-            } catch (_: Throwable) {}
-
-            if (isInitialized && boundTrack !== videoTrack) {
-                boundTrack?.let { prev ->
-                    try {
-                        prev.removeSink(view)
-                    } catch (_: Throwable) {}
-                }
-                try {
-                    videoTrack.addSink(view)
-                    boundTrack = videoTrack
-                } catch (e: Throwable) {
-                    Log.w("CallScreen", "Failed adding sink to VideoTrack: ${e.message}")
-                }
-            }
-        }
-    )
-}
-
-@Composable
-private fun WebRtcCallVideoContainer(
-    call: ActiveCall,
-    webRtcClient: WebRtcClient,
-    modifier: Modifier = Modifier
-) {
-    val remoteVideoTrack by webRtcClient.remoteVideoTrackFlow.collectAsState()
-    val eglContext = remember(webRtcClient) {
-        try { webRtcClient.eglBase.eglBaseContext } catch (_: Throwable) { null }
-    }
-
-    Box(modifier = modifier) {
-        val track = remoteVideoTrack
-        if (track != null && eglContext != null) {
-            SafeWebRtcVideoRenderer(
-                modifier = Modifier.fillMaxSize(),
-                videoTrack = track,
-                eglBaseContext = eglContext,
-                isMirror = false
-            )
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Person,
-                    contentDescription = null,
-                    tint = NeonCyan.copy(alpha = 0.5f),
-                    modifier = Modifier.size(96.dp)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "ESTABLISHING ENCRYPTED VIDEO FEED...",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NeonCyan.copy(alpha = 0.7f),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp,
-                    letterSpacing = 1.sp
-                )
-                Text(
-                    text = "Connecting Cloud & Mesh Video Engine",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted,
-                    fontSize = 9.sp
-                )
-            }
-        }
-
-        // Cybernetic stream badge
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(16.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(DarkBackground.copy(alpha = 0.75f))
-                .border(1.dp, NeonCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 8.dp, vertical = 4.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(NeonGreen)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "⚡ WEBRTC DIRECT (FREE P2P UDP)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = NeonGreen,
-                    fontSize = 9.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun WebRtcLocalPip(
-    call: ActiveCall,
-    webRtcClient: WebRtcClient,
-    modifier: Modifier = Modifier
-) {
-    val localVideoTrack by webRtcClient.localVideoTrackFlow.collectAsState()
-    val eglContext = remember(webRtcClient) {
-        try { webRtcClient.eglBase.eglBaseContext } catch (_: Throwable) { null }
-    }
-
-    val track = localVideoTrack
-    if (track != null && eglContext != null) {
-        SafeWebRtcVideoRenderer(
-            modifier = modifier.clip(RoundedCornerShape(14.dp)),
-            videoTrack = track,
-            eglBaseContext = eglContext,
-            isMirror = call.isFrontCamera
-        )
-    } else {
-        Box(
-            modifier = modifier
-                .clip(RoundedCornerShape(14.dp))
-                .background(DarkCard),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.Person,
-                contentDescription = null,
-                tint = NeonGreen.copy(alpha = 0.5f),
-                modifier = Modifier.size(36.dp)
-            )
-        }
-    }
-}
