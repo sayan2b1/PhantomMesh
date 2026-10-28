@@ -1,10 +1,17 @@
 package com.phantom.mesh.calling.webrtc
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.Camera2Enumerator
@@ -49,6 +56,8 @@ class WebRtcClient(
         private const val VIDEO_WIDTH = 640
         private const val VIDEO_HEIGHT = 480
         private const val VIDEO_FPS = 30
+
+        private val isFactoryInitialized = AtomicBoolean(false)
 
         private val ICE_SERVERS = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
@@ -109,7 +118,9 @@ class WebRtcClient(
         val options = PeerConnectionFactory.InitializationOptions.builder(context)
             .setEnableInternalTracer(false)
             .createInitializationOptions()
-        PeerConnectionFactory.initialize(options)
+        if (isFactoryInitialized.compareAndSet(false, true)) {
+            PeerConnectionFactory.initialize(options)
+        }
 
         val isAecSupported = try {
             JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
@@ -170,16 +181,25 @@ class WebRtcClient(
 
         val factory = peerConnectionFactory ?: return
 
-        // 1. Create Local Audio Track (Opus 48kHz, Hardware AEC)
-        val audioConstraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-        }
-        audioSource = factory.createAudioSource(audioConstraints)
-        localAudioTrack = factory.createAudioTrack("ARDAMSa0", audioSource).apply {
-            setEnabled(true)
+        // 1. Create Local Audio Track (Opus 48kHz, Hardware AEC) if permitted
+        val hasMic = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasMic) {
+            val audioConstraints = MediaConstraints().apply {
+                mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            }
+            audioSource = factory.createAudioSource(audioConstraints)
+            localAudioTrack = factory.createAudioTrack("ARDAMSa0", audioSource).apply {
+                setEnabled(true)
+            }
+        } else {
+            Log.w(TAG, "RECORD_AUDIO permission not granted, skipping local audio track")
         }
 
         // 2. Create Local Video Track if video call
@@ -259,6 +279,15 @@ class WebRtcClient(
     }
 
     private fun setupCameraCapture() {
+        val hasCam = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasCam) {
+            Log.w(TAG, "CAMERA permission not granted, skipping camera capture")
+            return
+        }
+
         try {
             val enumerator = Camera2Enumerator(context)
             val deviceNames = enumerator.deviceNames
@@ -311,6 +340,22 @@ class WebRtcClient(
             _localVideoTrackFlow.value = localVideoTrack
         } catch (e: Throwable) {
             Log.e(TAG, "Failed setting up camera capture: ${e.message}", e)
+        }
+    }
+
+    fun retryStartCameraIfPermitted() {
+        if (isClosed.get() || !isVideoCall || localVideoTrack != null) return
+        val hasCam = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasCam) {
+            setupCameraCapture()
+            try {
+                localVideoTrack?.let { peerConnection?.addTrack(it, listOf("ARDAMS")) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed attaching late local video track: ${e.message}", e)
+            }
         }
     }
 
@@ -409,6 +454,10 @@ class WebRtcClient(
     }
 
     fun onRemoteSessionDescriptionReceived(desc: RtcSessionDescription) {
+        val pc = peerConnection ?: run {
+            Log.w(TAG, "peerConnection is null when receiving remote SDP, ignoring ${desc.type}")
+            return
+        }
         if (!isRemoteDescriptionSet.compareAndSet(false, true)) {
             Log.d(TAG, "Remote session description already set, ignoring duplicate ${desc.type}")
             return
@@ -417,13 +466,13 @@ class WebRtcClient(
             val type = SessionDescription.Type.valueOf(desc.type.uppercase())
             val sessionDesc = SessionDescription(type, desc.sdp)
 
-            peerConnection?.setRemoteDescription(object : SdpObserver {
+            pc.setRemoteDescription(object : SdpObserver {
                 override fun onSetSuccess() {
                     Log.i(TAG, "Remote description set successfully for ${desc.type}")
                     // Drain any pending ICE candidates that arrived before remote SDP description was ready
                     for (cand in pendingCandidates) {
                         try {
-                            peerConnection?.addIceCandidate(cand)
+                            pc.addIceCandidate(cand)
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed adding pending ICE candidate: ${e.message}")
                         }
@@ -506,55 +555,6 @@ class WebRtcClient(
         try {
             videoCapturer?.stopCapture()
         } catch (_: Throwable) {}
-        try {
-            videoCapturer?.dispose()
-        } catch (_: Throwable) {}
-        videoCapturer = null
-
-        try {
-            surfaceTextureHelper?.dispose()
-        } catch (_: Throwable) {}
-        surfaceTextureHelper = null
-
-        try {
-            localVideoTrack?.setEnabled(false)
-        } catch (_: Throwable) {}
-        localVideoTrack = null
-
-        try {
-            videoSource?.dispose()
-        } catch (_: Throwable) {}
-        videoSource = null
-
-        try {
-            localAudioTrack?.setEnabled(false)
-        } catch (_: Throwable) {}
-        localAudioTrack = null
-
-        try {
-            audioSource?.dispose()
-        } catch (_: Throwable) {}
-        audioSource = null
-
-        try {
-            peerConnection?.close()
-            peerConnection?.dispose()
-        } catch (_: Throwable) {}
-        peerConnection = null
-
-        try {
-            peerConnectionFactory?.dispose()
-        } catch (_: Throwable) {}
-        peerConnectionFactory = null
-
-        try {
-            audioDeviceModule?.release()
-        } catch (_: Throwable) {}
-        audioDeviceModule = null
-
-        try {
-            eglBase.release()
-        } catch (_: Throwable) {}
 
         try {
             audioManager?.mode = AudioManager.MODE_NORMAL
@@ -562,6 +562,64 @@ class WebRtcClient(
         } catch (_: Throwable) {}
 
         pendingCandidates.clear()
-        Log.i(TAG, "WebRtcClient closed and media resources released")
+
+        // Delay native C++ WebRTC and EGL context destruction by 300ms on background thread.
+        // This guarantees Jetpack Compose detaches all VideoSinks on the UI thread
+        // BEFORE the native C++ VideoTrack pointers and EglBase context are freed.
+        CoroutineScope(Dispatchers.Default).launch {
+            delay(300)
+
+            try {
+                videoCapturer?.dispose()
+            } catch (_: Throwable) {}
+            videoCapturer = null
+
+            try {
+                surfaceTextureHelper?.dispose()
+            } catch (_: Throwable) {}
+            surfaceTextureHelper = null
+
+            try {
+                localVideoTrack?.setEnabled(false)
+            } catch (_: Throwable) {}
+            localVideoTrack = null
+
+            try {
+                videoSource?.dispose()
+            } catch (_: Throwable) {}
+            videoSource = null
+
+            try {
+                localAudioTrack?.setEnabled(false)
+            } catch (_: Throwable) {}
+            localAudioTrack = null
+
+            try {
+                audioSource?.dispose()
+            } catch (_: Throwable) {}
+            audioSource = null
+
+            try {
+                peerConnection?.close()
+                peerConnection?.dispose()
+            } catch (_: Throwable) {}
+            peerConnection = null
+
+            try {
+                peerConnectionFactory?.dispose()
+            } catch (_: Throwable) {}
+            peerConnectionFactory = null
+
+            try {
+                audioDeviceModule?.release()
+            } catch (_: Throwable) {}
+            audioDeviceModule = null
+
+            try {
+                eglBase.release()
+            } catch (_: Throwable) {}
+
+            Log.i(TAG, "WebRtcClient closed and native media resources safely released")
+        }
     }
 }

@@ -336,6 +336,27 @@ class CallManager @Inject constructor(
 
         audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
 
+        // 1. Signal call offer over Cloud Firestore before starting WebRTC so document exists for SDP offer
+        try {
+            val callData = hashMapOf(
+                "callId" to callId,
+                "callerId" to myUserId,
+                "callerUsername" to myUsername,
+                "targetId" to cleanTargetAddress,
+                "targetUsername" to cleanTargetAddress,
+                "targetRaw" to cleanTargetRaw,
+                "callType" to callType.name,
+                "status" to "ringing",
+                "callerNet" to myNetworkProfile.toMap(),
+                "timestamp" to System.currentTimeMillis()
+            )
+
+            FirebaseFirestore.getInstance().collection("calls").document(callId).set(callData, SetOptions.merge())
+            listenToCallDocument(callId)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cloud signaling write failed: ${e.message}")
+        }
+
         // Initialize WebRTC for outgoing call
         try {
             webRtcClient?.close()
@@ -356,27 +377,6 @@ class CallManager @Inject constructor(
             rtcClient.start(isCaller = true, isVideo = callType == CallType.VIDEO)
         } catch (e: Exception) {
             Log.e(TAG, "Failed initializing WebRTC for outgoing call: ${e.message}", e)
-        }
-
-        // 1. Signal call offer over Cloud Firestore
-        try {
-            val callData = hashMapOf(
-                "callId" to callId,
-                "callerId" to myUserId,
-                "callerUsername" to myUsername,
-                "targetId" to cleanTargetAddress,
-                "targetUsername" to cleanTargetAddress,
-                "targetRaw" to cleanTargetRaw,
-                "callType" to callType.name,
-                "status" to "ringing",
-                "callerNet" to myNetworkProfile.toMap(),
-                "timestamp" to System.currentTimeMillis()
-            )
-
-            FirebaseFirestore.getInstance().collection("calls").document(callId).set(callData)
-            listenToCallDocument(callId)
-        } catch (e: Exception) {
-            Log.w(TAG, "Cloud signaling write failed: ${e.message}")
         }
 
         // 2. Signal call offer over Mesh (Nearby Connections P2P)
@@ -486,8 +486,8 @@ class CallManager @Inject constructor(
                     sessionManager = sessionManager
                 )
                 webRtcSignaling = signaling
-                signaling.start()
                 rtcClient.start(isCaller = false, isVideo = call.callType == CallType.VIDEO)
+                signaling.start()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed initializing WebRTC for incoming call: ${e.message}", e)
             }
