@@ -37,7 +37,8 @@ data class RtcIceCandidate(
         fun fromMap(map: Map<*, *>?): RtcIceCandidate? {
             if (map == null) return null
             val sdp = map["sdp"] as? String ?: return null
-            val sdpMid = map["sdpMid"] as? String
+            val sdpMidRaw = map["sdpMid"] as? String
+            val sdpMid = if (sdpMidRaw.isNullOrBlank()) null else sdpMidRaw.trim()
             val sdpMLineIndex = (map["sdpMLineIndex"] as? Number)?.toInt() ?: 0
             return RtcIceCandidate(sdp, sdpMid, sdpMLineIndex)
         }

@@ -105,8 +105,14 @@ class CallManager @Inject constructor(
     private val _currentCall = MutableStateFlow<ActiveCall?>(null)
     val currentCall: StateFlow<ActiveCall?> = _currentCall.asStateFlow()
 
-    var webRtcClient: WebRtcClient? = null
-        private set
+    private val _webRtcClientFlow = MutableStateFlow<WebRtcClient?>(null)
+    val webRtcClientFlow: StateFlow<WebRtcClient?> = _webRtcClientFlow.asStateFlow()
+
+    var webRtcClient: WebRtcClient?
+        get() = _webRtcClientFlow.value
+        private set(value) {
+            _webRtcClientFlow.value = value
+        }
     private var webRtcSignaling: WebRtcSignalingManager? = null
 
     private var myNetworkProfile: NetworkProfile = LocalNetworkDetector.getCurrentProfile(context)

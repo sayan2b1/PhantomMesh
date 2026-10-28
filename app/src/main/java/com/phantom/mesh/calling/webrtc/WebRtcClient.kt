@@ -172,9 +172,16 @@ class WebRtcClient(
             .createInitializationOptions()
         PeerConnectionFactory.initialize(options)
 
+        val isAecSupported = try {
+            JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
+        } catch (_: Exception) { false }
+        val isNsSupported = try {
+            JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
+        } catch (_: Exception) { false }
+
         val adm = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(true)
-            .setUseHardwareNoiseSuppressor(true)
+            .setUseHardwareAcousticEchoCanceler(isAecSupported)
+            .setUseHardwareNoiseSuppressor(isNsSupported)
             .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
                 override fun onWebRtcAudioRecordInitError(err: String?) {
                     Log.w(TAG, "AudioRecord init error: $err")
@@ -269,6 +276,14 @@ class WebRtcClient(
                         } catch (_: Exception) {}
                     }
                     listener?.onRemoteVideoTrackReceived(track)
+                } else if (track is AudioTrack) {
+                    try {
+                        track.setEnabled(true)
+                        track.setVolume(1.0)
+                        Log.i(TAG, "Remote WebRTC AudioTrack received & unmuted: ${track.id()}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed unmuting remote AudioTrack: ${e.message}")
+                    }
                 }
             }
 
@@ -307,7 +322,11 @@ class WebRtcClient(
 
             val frontCameraName = deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
             val backCameraName = deviceNames.firstOrNull { enumerator.isBackFacing(it) }
-            val chosenCamera = frontCameraName ?: backCameraName ?: deviceNames.firstOrNull() ?: return
+            val chosenCamera = if (isFrontCamera) {
+                frontCameraName ?: backCameraName
+            } else {
+                backCameraName ?: frontCameraName
+            } ?: deviceNames.firstOrNull() ?: return
 
             isFrontCamera = enumerator.isFrontFacing(chosenCamera)
 
@@ -529,7 +548,8 @@ class WebRtcClient(
         if (!processedCandidates.add(key)) {
             return
         }
-        val iceCandidate = IceCandidate(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp)
+        val cleanMid = candidate.sdpMid?.trim()?.ifBlank { null }
+        val iceCandidate = IceCandidate(cleanMid, candidate.sdpMLineIndex, candidate.sdp)
         if (isRemoteDescriptionSet.get()) {
             try {
                 peerConnection?.addIceCandidate(iceCandidate)
