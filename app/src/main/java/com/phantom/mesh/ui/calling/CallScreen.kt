@@ -595,25 +595,6 @@ fun WebRtcSurfaceViewRenderer(
     isMirror: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val currentTrack = rememberUpdatedState(videoTrack)
-    var currentRenderer by remember { mutableStateOf<SurfaceViewRenderer?>(null) }
-
-    DisposableEffect(videoTrack, currentRenderer) {
-        val renderer = currentRenderer
-        if (renderer != null && videoTrack != null) {
-            try {
-                videoTrack.addSink(renderer)
-            } catch (_: Exception) {}
-        }
-        onDispose {
-            if (renderer != null && videoTrack != null) {
-                try {
-                    videoTrack.removeSink(renderer)
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
     AndroidView(
         factory = { ctx ->
             SurfaceViewRenderer(ctx).apply {
@@ -625,26 +606,39 @@ fun WebRtcSurfaceViewRenderer(
                 setMirror(isMirror)
                 try {
                     init(eglBaseContext, null)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.w("WebRtcRenderer", "Renderer init error: ${e.message}")
                 }
-                currentRenderer = this
             }
         },
         update = { renderer ->
             try {
                 renderer.setMirror(isMirror)
-            } catch (_: Exception) {}
+            } catch (_: Throwable) {}
+
+            val previousTrack = renderer.tag as? VideoTrack
+            if (previousTrack != videoTrack) {
+                try {
+                    previousTrack?.removeSink(renderer)
+                } catch (_: Throwable) {}
+                try {
+                    videoTrack?.addSink(renderer)
+                    renderer.tag = videoTrack
+                } catch (_: Throwable) {}
+            }
         },
         onRelease = { renderer ->
+            val previousTrack = renderer.tag as? VideoTrack
             try {
-                currentTrack.value?.removeSink(renderer)
+                previousTrack?.removeSink(renderer)
+            } catch (_: Throwable) {}
+            renderer.tag = null
+            try {
                 renderer.clearImage()
+            } catch (_: Throwable) {}
+            try {
                 renderer.release()
-            } catch (_: Exception) {}
-            if (currentRenderer == renderer) {
-                currentRenderer = null
-            }
+            } catch (_: Throwable) {}
         },
         modifier = modifier
     )

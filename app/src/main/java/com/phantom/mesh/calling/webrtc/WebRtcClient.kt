@@ -70,6 +70,7 @@ class WebRtcClient(
     var listener: Listener? = null
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private var audioDeviceModule: JavaAudioDeviceModule? = null
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
 
@@ -205,8 +206,9 @@ class WebRtcClient(
                 }
             })
             .createAudioDeviceModule()
+        audioDeviceModule = adm
 
-        val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
+        val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, false)
         val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
 
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -350,6 +352,9 @@ class WebRtcClient(
                     Log.d(TAG, "Camera closed")
                 }
             })
+            try {
+                surfaceTextureHelper?.dispose()
+            } catch (_: Exception) {}
             surfaceTextureHelper = SurfaceTextureHelper.create("WebRtcCaptureThread", eglBase.eglBaseContext)
 
             val factory = peerConnectionFactory ?: return
@@ -364,11 +369,11 @@ class WebRtcClient(
                 for (renderer in localRenderers) {
                     try {
                         addSink(renderer)
-                    } catch (_: Exception) {}
+                    } catch (_: Throwable) {}
                 }
             }
             _localVideoTrackFlow.value = localVideoTrack
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed setting up camera capture: ${e.message}", e)
         }
     }
@@ -571,35 +576,52 @@ class WebRtcClient(
 
         try {
             videoCapturer?.stopCapture()
+        } catch (_: Throwable) {}
+        try {
             videoCapturer?.dispose()
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
         videoCapturer = null
 
         try {
             surfaceTextureHelper?.dispose()
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
         surfaceTextureHelper = null
 
         try {
-            localVideoTrack?.dispose()
-            videoSource?.dispose()
-        } catch (_: Exception) {}
+            localVideoTrack?.setEnabled(false)
+        } catch (_: Throwable) {}
+        localVideoTrack = null
 
         try {
-            localAudioTrack?.dispose()
+            videoSource?.dispose()
+        } catch (_: Throwable) {}
+        videoSource = null
+
+        try {
+            localAudioTrack?.setEnabled(false)
+        } catch (_: Throwable) {}
+        localAudioTrack = null
+
+        try {
             audioSource?.dispose()
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
+        audioSource = null
 
         try {
             peerConnection?.close()
             peerConnection?.dispose()
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
         peerConnection = null
+
+        try {
+            audioDeviceModule?.release()
+        } catch (_: Throwable) {}
+        audioDeviceModule = null
 
         try {
             audioManager?.mode = AudioManager.MODE_NORMAL
             audioManager?.isSpeakerphoneOn = false
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
 
         pendingCandidates.clear()
         Log.i(TAG, "WebRtcClient closed and media resources released")

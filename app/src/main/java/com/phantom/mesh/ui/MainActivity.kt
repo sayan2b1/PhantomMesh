@@ -29,8 +29,30 @@ import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 
 import android.content.pm.PackageManager
+import android.content.Context
+import android.content.ClipboardManager
+import android.content.ClipData
+import android.widget.Toast
+import java.io.File
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 import com.phantom.mesh.calling.CallManager
+import com.phantom.mesh.calling.CallType
 import com.phantom.mesh.ui.calling.CallOverlayScreen
 import com.phantom.mesh.data.repository.ChatRepository
 
@@ -67,6 +89,18 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             Log.w("MainActivity", "Required permissions not fully granted; mesh foreground service held back")
+        }
+    }
+
+    private val incomingCallPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val micOk = perms[Manifest.permission.RECORD_AUDIO] == true
+        val camOk = perms[Manifest.permission.CAMERA] ?: true
+        if (micOk && camOk) {
+            callManager.acceptCall()
+        } else {
+            Toast.makeText(this, "Camera & Microphone permissions required to answer call", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -158,6 +192,69 @@ class MainActivity : ComponentActivity() {
 
                 PhantomNavGraph(navController = navController, startDestination = initialDestination)
 
+                // ── PREVIOUS CRASH LOG DETECTOR ─────────────────────────────
+                var crashLogText by remember { mutableStateOf<String?>(null) }
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    try {
+                        val crashFile = File(filesDir, "crash_log.txt")
+                        if (crashFile.exists()) {
+                            val text = crashFile.readText().trim()
+                            if (text.isNotBlank()) {
+                                crashLogText = text
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                crashLogText?.let { log ->
+                    AlertDialog(
+                        onDismissRequest = {
+                            try { File(filesDir, "crash_log.txt").delete() } catch (_: Exception) {}
+                            crashLogText = null
+                        },
+                        title = { Text("Crash Report Detected") },
+                        text = {
+                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                Text(
+                                    text = "A crash was recorded from the previous session. You can copy the exact stack trace to help diagnose the issue:",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = log.take(1500),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 9.sp
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    val clip = ClipData.newPlainText("PhantomMesh Crash Log", log)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(this@MainActivity, "Crash log copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    try { File(filesDir, "crash_log.txt").delete() } catch (_: Exception) {}
+                                    crashLogText = null
+                                }
+                            ) {
+                                Text("Copy Log")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(
+                                onClick = {
+                                    try { File(filesDir, "crash_log.txt").delete() } catch (_: Exception) {}
+                                    crashLogText = null
+                                }
+                            ) {
+                                Text("Dismiss")
+                            }
+                        }
+                    )
+                }
+
                 // ── GLOBAL ACTIVE & INCOMING CALL OVERLAY ───────────────────
                 // Renders across the entire app whenever a call is ringing or active
                 val activeCall by callManager.currentCall.collectAsState()
@@ -170,7 +267,26 @@ class MainActivity : ComponentActivity() {
                         onSpeakerToggle = { callManager.toggleSpeaker() },
                         onVideoToggle = { callManager.toggleVideo() },
                         onFlipCamera = { callManager.flipCamera() },
-                        onAccept = { callManager.acceptCall() },
+                        onAccept = {
+                            val hasAudio = ContextCompat.checkSelfPermission(
+                                this@MainActivity,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                            val hasCam = ContextCompat.checkSelfPermission(
+                                this@MainActivity,
+                                Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                            val needsCam = call.callType == CallType.VIDEO
+
+                            if (hasAudio && (!needsCam || hasCam)) {
+                                callManager.acceptCall()
+                            } else {
+                                val needed = mutableListOf<String>()
+                                if (!hasAudio) needed.add(Manifest.permission.RECORD_AUDIO)
+                                if (needsCam && !hasCam) needed.add(Manifest.permission.CAMERA)
+                                incomingCallPermissionLauncher.launch(needed.toTypedArray())
+                            }
+                        },
                         onEndCall = { callManager.endCall() }
                     )
                 }
