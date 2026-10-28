@@ -44,6 +44,7 @@ object CameraVideoEngine {
     private const val TARGET_SAMPLE_HEIGHT = 180
     private const val FRAME_INTERVAL_MS = 160L // ~6.2 fps: optimal for real-time mesh, LAN, and cloud streaming
 
+    private val mainHandler = Handler(android.os.Looper.getMainLooper())
     private val cameraLock = Any()
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -51,6 +52,7 @@ object CameraVideoEngine {
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
+    private var activePreviewSurface: Surface? = null
     private var currentSurfaceTexture: SurfaceTexture? = null
     private var dummySurfaceTexture: SurfaceTexture? = null
     private var activeTextureView: WeakReference<TextureView>? = null
@@ -156,6 +158,10 @@ object CameraVideoEngine {
         synchronized(cameraLock) {
             activeTextureView = null
             currentSurfaceTexture = null
+            try {
+                activePreviewSurface?.release()
+            } catch (_: Exception) {}
+            activePreviewSurface = null
         }
     }
 
@@ -397,8 +403,20 @@ object CameraVideoEngine {
                 } catch (_: Exception) {}
                 captureSession = null
 
+                try {
+                    activePreviewSurface?.release()
+                } catch (_: Exception) {}
+                activePreviewSurface = null
+
                 // Ensure a valid TextureView preview surface exists before configuring session
-                val texture = currentSurfaceTexture
+                var texture = currentSurfaceTexture
+                if (texture == null) {
+                    if (dummySurfaceTexture == null) {
+                        dummySurfaceTexture = SurfaceTexture(0)
+                    }
+                    texture = dummySurfaceTexture
+                }
+
                 if (texture == null) {
                     Log.d(TAG, "TextureView preview surface not yet attached; awaiting attachPreview()")
                     return
@@ -406,7 +424,10 @@ object CameraVideoEngine {
 
                 texture.setDefaultBufferSize(previewSize.width, previewSize.height)
                 val previewSurface = Surface(texture)
-                val surfaces = listOf(previewSurface)
+                activePreviewSurface = previewSurface
+
+                val surfaces = mutableListOf<Surface>(previewSurface)
+                imageReader?.surface?.let { surfaces.add(it) }
 
                 val sessionCallback = object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
@@ -456,6 +477,11 @@ object CameraVideoEngine {
             captureSession = null
 
             try {
+                activePreviewSurface?.release()
+            } catch (_: Exception) {}
+            activePreviewSurface = null
+
+            try {
                 cameraDevice?.close()
             } catch (_: Exception) {}
             cameraDevice = null
@@ -481,6 +507,10 @@ object CameraVideoEngine {
             stopBackgroundThread()
             activeTextureView = null
             currentSurfaceTexture = null
+            try {
+                activePreviewSurface?.release()
+            } catch (_: Exception) {}
+            activePreviewSurface = null
             onFrameCapturedCallback = null
             Log.i(TAG, "CameraVideoEngine stopped")
         }
