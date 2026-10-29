@@ -55,6 +55,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -254,25 +257,23 @@ fun ChatScreen(
     }
 
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, viewModel.chatId) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                com.phantom.mesh.util.NotificationHelper.currentActiveChatId = viewModel.chatId
                 viewModel.markChatAsRead()
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                if (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == viewModel.chatId) {
+                    com.phantom.mesh.util.NotificationHelper.currentActiveChatId = null
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
-    // Suppress notifications for this chat while active on screen
-    DisposableEffect(viewModel.chatId) {
-        com.phantom.mesh.util.NotificationHelper.currentActiveChatId = viewModel.chatId
-        onDispose {
             if (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == viewModel.chatId) {
                 com.phantom.mesh.util.NotificationHelper.currentActiveChatId = null
             }
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -367,21 +368,31 @@ fun ChatScreen(
         else messages.indexOfLast { unreadMessageIds.contains(it.messageId) }
     }
 
-    // Anchor chat view to last read message / unread divider on entry.
-    // Unread messages appear below it, requiring user to scroll down to view them.
+    // Anchor chat view to bottom (latest message) on entry.
     var hasScrolledToInitialPosition by remember { mutableStateOf(false) }
-    LaunchedEffect(messages.isNotEmpty(), oldestUnreadIndex) {
+    LaunchedEffect(messages.isNotEmpty()) {
         if (messages.isNotEmpty() && !hasScrolledToInitialPosition) {
-            if (oldestUnreadIndex > 0) {
-                listState.scrollToItem(oldestUnreadIndex)
-                hasScrolledToInitialPosition = true
-            } else if (oldestUnreadIndex == 0) {
-                listState.scrollToItem(0)
-                hasScrolledToInitialPosition = true
-            } else if (unreadMessageIds.isEmpty()) {
-                listState.scrollToItem(0)
-                hasScrolledToInitialPosition = true
+            listState.scrollToItem(0)
+            hasScrolledToInitialPosition = true
+        }
+    }
+
+    // Auto-scroll to bottom when new message arrives or is sent (if user is at or near the bottom)
+    val latestMessageId = remember(messages) { messages.firstOrNull()?.messageId }
+    LaunchedEffect(latestMessageId) {
+        if (latestMessageId != null && hasScrolledToInitialPosition) {
+            if (listState.firstVisibleItemIndex <= 2) {
+                listState.animateScrollToItem(0)
             }
+        }
+    }
+
+    // Keep chat anchored at the bottom when keyboard opens
+    val density = LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0 && listState.firstVisibleItemIndex <= 2) {
+            listState.animateScrollToItem(0)
         }
     }
 

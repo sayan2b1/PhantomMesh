@@ -224,8 +224,8 @@ class ChatViewModel @Inject constructor(
                     lastObservedCount = list.size
                 } else if (list.size > lastObservedCount) {
                     val newCount = list.size - lastObservedCount
-                    val newMessages = list.takeLast(newCount)
-                    if (newMessages.any { it.senderId != myId && it.senderId != myName }) {
+                    val newMessages = list.take(newCount)
+                    if (newMessages.any { it.senderId != myId && !it.senderId.equals(myName, ignoreCase = true) }) {
                         SoundEffectManager.playMessageReceivedSound()
                         // Automatically acknowledge read since user is actively on this chat screen
                         chatRepository.markChatAsRead(
