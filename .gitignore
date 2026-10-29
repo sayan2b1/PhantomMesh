@@ -32,7 +32,8 @@ captures/
 .DS_Store
 Thumbs.db
 
-# Firebase functions
+# Firebase secrets & credentials
+app/google-services.json
 firebase/functions/node_modules/
 firebase/functions/lib/
 firebase/functions/*.log
