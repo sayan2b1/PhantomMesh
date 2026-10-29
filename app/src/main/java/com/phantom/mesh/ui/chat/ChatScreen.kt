@@ -69,12 +69,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContactPhone
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -87,7 +89,10 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
@@ -167,6 +172,8 @@ fun ChatScreen(
     val currentUsername by viewModel.currentUsername.collectAsState()
     val chatWallpaperPath by viewModel.chatWallpaperPath.collectAsState()
     val contactAliases by viewModel.contactAliases.collectAsState()
+    val currentChat by viewModel.currentChat.collectAsState()
+    val blockedUsers by viewModel.blockedUsers.collectAsState()
 
     var inputMessage by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -177,6 +184,8 @@ fun ChatScreen(
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var showAudioPickerSheet by remember { mutableStateOf(false) }
     var showCustomNameDialog by remember { mutableStateOf(false) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
+    var showBlockContactDialog by remember { mutableStateOf(false) }
     var aliasInput by remember { mutableStateOf("") }
 
     val cleanTargetName = remember(viewModel.targetId) {
@@ -186,6 +195,10 @@ fun ChatScreen(
             .removePrefix("PEER: ")
             .trim()
             .ifBlank { "Encrypted Contact" }
+    }
+
+    val isContactBlocked = remember(blockedUsers, viewModel.targetId) {
+        viewModel.isContactBlocked()
     }
 
     val formattedTargetName = remember(viewModel.targetId, contactAliases) {
@@ -237,6 +250,19 @@ fun ChatScreen(
     DisposableEffect(Unit) {
         onDispose {
             voicePlayerManager.stop()
+        }
+    }
+
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.markChatAsRead()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -483,6 +509,43 @@ fun ChatScreen(
                                     )
                                 }
                             )
+
+                            // Mute / Unmute Notifications
+                            val isMuted = currentChat?.isMuted == true
+                            DropdownMenuItem(
+                                text = { Text(if (isMuted) "Unmute Notifications" else "Mute Notifications", color = TextPrimary) },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.toggleMuteChat()
+                                    Toast.makeText(context, if (isMuted) "Notifications unmuted" else "Notifications muted", Toast.LENGTH_SHORT).show()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (isMuted) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                                        contentDescription = null,
+                                        tint = NeonCyan
+                                    )
+                                }
+                            )
+
+                            // Archive / Unarchive Chat
+                            val isArchived = currentChat?.isArchived == true
+                            DropdownMenuItem(
+                                text = { Text(if (isArchived) "Unarchive Chat" else "Archive Chat", color = TextPrimary) },
+                                onClick = {
+                                    showMenu = false
+                                    viewModel.toggleArchiveChat()
+                                    Toast.makeText(context, if (isArchived) "Chat unarchived" else "Chat archived", Toast.LENGTH_SHORT).show()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
+                                        contentDescription = null,
+                                        tint = NeonCyan
+                                    )
+                                }
+                            )
+
                             DropdownMenuItem(
                                 text = { Text("Set Chat Wallpaper", color = TextPrimary) },
                                 onClick = {
@@ -497,6 +560,7 @@ fun ChatScreen(
                                     )
                                 }
                             )
+
                             if (!chatWallpaperPath.isNullOrBlank()) {
                                 DropdownMenuItem(
                                     text = { Text("Reset Wallpaper", color = DuressCrimson) },
@@ -513,6 +577,43 @@ fun ChatScreen(
                                     }
                                 )
                             }
+
+                            // Clear Chat Option
+                            DropdownMenuItem(
+                                text = { Text("Clear Chat", color = DuressCrimson) },
+                                onClick = {
+                                    showMenu = false
+                                    showClearChatDialog = true
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteSweep,
+                                        contentDescription = null,
+                                        tint = DuressCrimson
+                                    )
+                                }
+                            )
+
+                            // Block / Unblock Contact
+                            DropdownMenuItem(
+                                text = { Text(if (isContactBlocked) "Unblock Contact" else "Block Contact", color = if (isContactBlocked) NeonCyan else DuressCrimson) },
+                                onClick = {
+                                    showMenu = false
+                                    if (isContactBlocked) {
+                                        viewModel.unblockContact()
+                                        Toast.makeText(context, "@$cleanTargetName unblocked", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        showBlockContactDialog = true
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Block,
+                                        contentDescription = null,
+                                        tint = if (isContactBlocked) NeonCyan else DuressCrimson
+                                    )
+                                }
+                            )
                         }
                     }
                 },
@@ -551,6 +652,46 @@ fun ChatScreen(
                     .fillMaxSize()
                     .imePadding()
             ) {
+                if (isContactBlocked) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(DuressCrimson.copy(alpha = 0.15f))
+                            .border(1.dp, DuressCrimson.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                            .clickable {
+                                viewModel.unblockContact()
+                                Toast.makeText(context, "@$cleanTargetName unblocked", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Block,
+                                contentDescription = null,
+                                tint = DuressCrimson,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "You have blocked this contact. Tap here to unblock.",
+                                color = DuressCrimson,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "UNBLOCK",
+                                color = NeonCyan,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -1048,6 +1189,92 @@ fun ChatScreen(
             dismissButton = {
                 TextButton(onClick = { selectedMessageForDelete = null }) {
                     Text("CANCEL", color = TextMuted)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
+
+    // Clear Chat Confirmation Dialog
+    if (showClearChatDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearChatDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteSweep,
+                        contentDescription = null,
+                        tint = DuressCrimson,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clear Chat?", color = TextPrimary)
+                }
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to delete all messages in this conversation with @$cleanTargetName? This cannot be undone.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearChat()
+                        showClearChatDialog = false
+                        Toast.makeText(context, "Chat cleared", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("CLEAR CHAT", color = DuressCrimson, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearChatDialog = false }) {
+                    Text("CANCEL", color = TextMuted, fontSize = 12.sp)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
+
+    // Block Contact Confirmation Dialog
+    if (showBlockContactDialog) {
+        AlertDialog(
+            onDismissRequest = { showBlockContactDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Block,
+                        contentDescription = null,
+                        tint = DuressCrimson,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Block Contact?", color = TextPrimary)
+                }
+            },
+            text = {
+                Text(
+                    text = "Block @$cleanTargetName? They will not be able to send you messages or initiate calls with you.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.blockContact()
+                        showBlockContactDialog = false
+                        Toast.makeText(context, "@$cleanTargetName blocked", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("BLOCK", color = DuressCrimson, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBlockContactDialog = false }) {
+                    Text("CANCEL", color = TextMuted, fontSize = 12.sp)
                 }
             },
             containerColor = DarkCard

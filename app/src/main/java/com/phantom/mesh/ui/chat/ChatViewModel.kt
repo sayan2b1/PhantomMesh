@@ -47,6 +47,11 @@ class ChatViewModel @Inject constructor(
     val messages: StateFlow<List<MessageEntity>> = chatRepository.observeMessages(chatId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val currentChat: StateFlow<com.phantom.mesh.data.local.entity.ChatEntity?> = chatRepository.observeChat(chatId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val blockedUsers: StateFlow<Set<String>> = sessionManager.blockedUsersFlow
+
     private val _currentUserId = MutableStateFlow<String?>(null)
     val currentUserId: StateFlow<String?> = _currentUserId.asStateFlow()
     val currentUsername: StateFlow<String?> = sessionManager.usernameFlow
@@ -146,17 +151,61 @@ class ChatViewModel @Inject constructor(
         return contactAliasManager.getFormattedDisplayName(targetId)
     }
 
+    fun isContactBlocked(): Boolean {
+        val clean = getCleanPeerId()
+        return sessionManager.isUserBlocked(clean) || sessionManager.isUserBlocked(targetId)
+    }
+
+    fun blockContact() {
+        val clean = getCleanPeerId()
+        sessionManager.blockUser(clean)
+    }
+
+    fun unblockContact() {
+        val clean = getCleanPeerId()
+        sessionManager.unblockUser(clean)
+    }
+
+    fun clearChat() {
+        viewModelScope.launch {
+            try {
+                chatRepository.clearChat(chatId)
+            } catch (e: Exception) {
+                android.util.Log.e("ChatViewModel", "Error in clearChat: ${e.message}", e)
+            }
+        }
+    }
+
+    fun toggleMuteChat() {
+        viewModelScope.launch {
+            val isMuted = currentChat.value?.isMuted ?: false
+            chatRepository.setChatMuted(chatId, !isMuted)
+        }
+    }
+
+    fun toggleArchiveChat() {
+        viewModelScope.launch {
+            val isArchived = currentChat.value?.isArchived ?: false
+            chatRepository.setChatArchived(chatId, !isArchived)
+        }
+    }
+
     private val _unreadMessageIds = MutableStateFlow<Set<String>>(emptySet())
     val unreadMessageIds: StateFlow<Set<String>> = _unreadMessageIds.asStateFlow()
 
     private var isInitialLoadDone = false
     private var lastObservedCount = 0
+    private var cloudReceiptListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
         com.phantom.mesh.util.NotificationHelper.currentActiveChatId = chatId
         viewModelScope.launch {
             val myId = sessionManager.getUserId() ?: ""
+            val myName = sessionManager.getUsername() ?: myId
             _currentUserId.value = myId
+
+            // Attach real-time cloud receipt listener for this active chat
+            cloudReceiptListener = chatRepository.attachCloudReceiptListener(chatId, myId, myName)
 
             // 1. Capture which messages are unread before marking as read
             val unreadIds = chatRepository.getUnreadMessageIds(chatId, myId)
@@ -166,9 +215,9 @@ class ChatViewModel @Inject constructor(
 
             // 2. Mark chat as read and dispatch read receipt if enabled
             val readReceiptsOn = sessionManager.isReadReceiptsEnabled()
-            chatRepository.markChatAsRead(chatId, myId, sendReadReceipt = readReceiptsOn)
+            chatRepository.markChatAsRead(chatId, myId, myName, sendReadReceipt = readReceiptsOn)
 
-            // 3. Listen for incoming messages to trigger pop-up sound
+            // 3. Listen for incoming messages to trigger pop-up sound & mark as read
             messages.collect { list ->
                 if (!isInitialLoadDone) {
                     isInitialLoadDone = true
@@ -176,8 +225,15 @@ class ChatViewModel @Inject constructor(
                 } else if (list.size > lastObservedCount) {
                     val newCount = list.size - lastObservedCount
                     val newMessages = list.takeLast(newCount)
-                    if (newMessages.any { it.senderId != myId }) {
+                    if (newMessages.any { it.senderId != myId && it.senderId != myName }) {
                         SoundEffectManager.playMessageReceivedSound()
+                        // Automatically acknowledge read since user is actively on this chat screen
+                        chatRepository.markChatAsRead(
+                            chatId = chatId,
+                            currentUserId = myId,
+                            currentUsername = myName,
+                            sendReadReceipt = sessionManager.isReadReceiptsEnabled()
+                        )
                     }
                     lastObservedCount = list.size
                 } else {
@@ -187,7 +243,22 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun markChatAsRead() {
+        viewModelScope.launch {
+            val myId = sessionManager.getUserId() ?: ""
+            val myName = sessionManager.getUsername() ?: myId
+            chatRepository.markChatAsRead(
+                chatId = chatId,
+                currentUserId = myId,
+                currentUsername = myName,
+                sendReadReceipt = sessionManager.isReadReceiptsEnabled()
+            )
+        }
+    }
+
     override fun onCleared() {
+        cloudReceiptListener?.remove()
+        cloudReceiptListener = null
         if (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == chatId) {
             com.phantom.mesh.util.NotificationHelper.currentActiveChatId = null
         }

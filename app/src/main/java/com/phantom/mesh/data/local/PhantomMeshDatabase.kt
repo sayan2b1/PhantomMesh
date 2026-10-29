@@ -2,11 +2,13 @@ package com.phantom.mesh.data.local
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.phantom.mesh.data.local.dao.CallLogDao
 import com.phantom.mesh.data.local.dao.ChatDao
 import com.phantom.mesh.data.local.dao.DropZoneDao
 import com.phantom.mesh.data.local.dao.MeshQueueDao
 import com.phantom.mesh.data.local.dao.MessageDao
 import com.phantom.mesh.data.local.dao.UserDao
+import com.phantom.mesh.data.local.entity.CallLogEntity
 import com.phantom.mesh.data.local.entity.ChatEntity
 import com.phantom.mesh.data.local.entity.DropZoneEntity
 import com.phantom.mesh.data.local.entity.MeshQueueEntity
@@ -22,6 +24,7 @@ import com.phantom.mesh.data.local.entity.UserEntity
  * - [MessageEntity]: messages with full mesh routing metadata
  * - [DropZoneEntity]: proximity-shared files with TTL expiry
  * - [MeshQueueEntity]: persistent priority queue for mesh packet relay
+ * - [CallLogEntity]: persistent history of voice and video calls
  *
  * SECURITY NOTE: This database is the target of the duress login wipe.
  * The [DuressWipeManager] calls each DAO's nuke method to destroy all
@@ -33,9 +36,10 @@ import com.phantom.mesh.data.local.entity.UserEntity
         ChatEntity::class,
         MessageEntity::class,
         DropZoneEntity::class,
-        MeshQueueEntity::class
+        MeshQueueEntity::class,
+        CallLogEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class PhantomMeshDatabase : RoomDatabase() {
@@ -45,6 +49,7 @@ abstract class PhantomMeshDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun dropZoneDao(): DropZoneDao
     abstract fun meshQueueDao(): MeshQueueDao
+    abstract fun callLogDao(): CallLogDao
 
     companion object {
         const val DATABASE_NAME = "phantom_mesh_db"

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -91,6 +93,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -157,6 +160,8 @@ fun SettingsScreen(
     val isRestoreRunning by viewModel.isRestoreRunning.collectAsState()
     val availableBackups by viewModel.availableBackups.collectAsState()
     val securityQuestion by viewModel.securityQuestion.collectAsState()
+    val blockedUsers by viewModel.blockedUsers.collectAsState()
+    val isDndEnabled by viewModel.isDndEnabled.collectAsState()
 
     var currentSubPage by remember { mutableStateOf(SettingsSubPage.MAIN) }
 
@@ -318,8 +323,13 @@ fun SettingsScreen(
                     SettingsSubPage.PRIVACY_SECURITY -> {
                         SettingsPrivacySecurityContent(
                             readReceiptsEnabled = readReceiptsEnabled,
+                            isDndEnabled = isDndEnabled,
+                            blockedUsers = blockedUsers,
                             currentSecurityQuestion = securityQuestion,
                             onToggleReadReceipts = { viewModel.setReadReceiptsEnabled(it) },
+                            onToggleDnd = { viewModel.setDndEnabled(it) },
+                            onUnblockUser = { viewModel.unblockUser(it) },
+                            getDisplayName = { viewModel.getFormattedDisplayName(it) },
                             onOpenSecurityQuestionDialog = { showSecurityQuestionDialog = true },
                             onSaveDecoy = { viewModel.updateDecoyPassword(it) },
                             onTriggerEmergencyWipe = { showNukeDialog = true }
@@ -1653,8 +1663,13 @@ private fun SettingsChatAppearanceContent(
 @Composable
 private fun SettingsPrivacySecurityContent(
     readReceiptsEnabled: Boolean,
+    isDndEnabled: Boolean,
+    blockedUsers: Set<String>,
     currentSecurityQuestion: String?,
     onToggleReadReceipts: (Boolean) -> Unit,
+    onToggleDnd: (Boolean) -> Unit,
+    onUnblockUser: (String) -> Unit,
+    getDisplayName: (String) -> String,
     onOpenSecurityQuestionDialog: () -> Unit,
     onSaveDecoy: (String) -> Unit,
     onTriggerEmergencyWipe: () -> Unit
@@ -1741,7 +1756,211 @@ private fun SettingsPrivacySecurityContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // ── 2. ACCOUNT RECOVERY (SECURITY QUESTION) ─────────────────────────
+        // ── 2. DO NOT DISTURB (DND) MODE ─────────────────────────────
+        Text(
+            text = "DO NOT DISTURB (DND)",
+            style = MaterialTheme.typography.labelSmall,
+            color = NeonCyan,
+            fontFamily = FontFamily.Monospace
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(DarkCard)
+                .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isDndEnabled) DuressCrimson.copy(alpha = 0.15f) else NeonCyan.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NotificationsOff,
+                            contentDescription = null,
+                            tint = if (isDndEnabled) DuressCrimson else TextMuted,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    Column {
+                        Text(
+                            text = "Do Not Disturb (Silence All)",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (isDndEnabled) "Active: all message & call alerts silenced" else "Off: regular alerts and ringtones enabled",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Switch(
+                    checked = isDndEnabled,
+                    onCheckedChange = onToggleDnd,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = DuressCrimson,
+                        checkedTrackColor = DuressCrimson.copy(alpha = 0.3f),
+                        uncheckedThumbColor = TextMuted,
+                        uncheckedTrackColor = DarkSurfaceVariant
+                    )
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // ── 3. BLOCKED CONTACTS (COUNT + UNBLOCK) ──────────────────────
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "BLOCKED CONTACTS (${blockedUsers.size})",
+                style = MaterialTheme.typography.labelSmall,
+                color = NeonCyan,
+                fontFamily = FontFamily.Monospace
+            )
+            if (blockedUsers.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(DuressCrimson.copy(alpha = 0.2f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "${blockedUsers.size} BLOCKED",
+                        color = DuressCrimson,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(DarkCard)
+                .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                .padding(16.dp)
+        ) {
+            if (blockedUsers.isEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Block,
+                        contentDescription = null,
+                        tint = TextMuted,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "No blocked contacts. Users you block in conversations will appear here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    blockedUsers.forEach { rawUser ->
+                        val clean = rawUser.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
+                        val formattedName = getDisplayName(clean)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(DarkSurfaceVariant.copy(alpha = 0.5f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(DarkCard)
+                                        .border(1.dp, DuressCrimson.copy(alpha = 0.5f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = DuressCrimson,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = formattedName,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "@$clean",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextMuted,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+
+                            Button(
+                                onClick = { onUnblockUser(clean) },
+                                colors = ButtonDefaults.buttonColors(containerColor = NeonCyan.copy(alpha = 0.15f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.5f)),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "UNBLOCK",
+                                    color = NeonCyan,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // ── 4. ACCOUNT RECOVERY (SECURITY QUESTION) ─────────────────────────
         Text(
             text = "ACCOUNT RECOVERY QUESTION",
             style = MaterialTheme.typography.labelSmall,

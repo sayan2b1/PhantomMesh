@@ -37,11 +37,11 @@ fun HopReceiptIcon(
             )
         }
         "mesh_sent" -> {
-            // One Check: Handed off to Mesh Router or Cloud
+            // One Gray Check: Handed off to Mesh Router or Cloud
             Icon(
                 imageVector = Icons.Default.Check,
                 contentDescription = "Handed off to Mesh Router",
-                tint = if (readReceiptsEnabled) CheckBlue else CheckGray,
+                tint = CheckGray,
                 modifier = modifier.size(13.dp)
             )
         }

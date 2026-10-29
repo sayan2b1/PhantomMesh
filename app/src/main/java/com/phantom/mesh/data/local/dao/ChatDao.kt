@@ -28,17 +28,24 @@ interface ChatDao {
 
     /** Active conversations sorted by most recent message */
     @Query("""
-        SELECT * FROM chats 
-        WHERE is_archived = 0 
-        ORDER BY last_message_timestamp DESC
+        SELECT c.* FROM chats c 
+        WHERE c.is_archived = 0 
+        ORDER BY MAX(c.last_message_timestamp, COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.chat_id = c.chat_id), c.created_at)) DESC
     """)
     fun observeActiveChats(): Flow<List<ChatEntity>>
 
     /** All chats (non-reactive, for polling sync) */
-    @Query("SELECT * FROM chats ORDER BY last_message_timestamp DESC")
+    @Query("""
+        SELECT c.* FROM chats c 
+        ORDER BY MAX(c.last_message_timestamp, COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.chat_id = c.chat_id), c.created_at)) DESC
+    """)
     suspend fun getAllChats(): List<ChatEntity>
 
-    @Query("SELECT * FROM chats WHERE is_archived = 1 ORDER BY last_message_timestamp DESC")
+    @Query("""
+        SELECT c.* FROM chats c 
+        WHERE c.is_archived = 1 
+        ORDER BY MAX(c.last_message_timestamp, COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.chat_id = c.chat_id), c.created_at)) DESC
+    """)
     fun observeArchivedChats(): Flow<List<ChatEntity>>
 
     /** Find an existing 1:1 chat by sorted participant string */
@@ -58,6 +65,15 @@ interface ChatDao {
         timestamp: Long,
         transport: String
     )
+
+    @Query("UPDATE chats SET is_muted = :isMuted WHERE chat_id = :chatId")
+    suspend fun setChatMuted(chatId: String, isMuted: Boolean)
+
+    @Query("UPDATE chats SET is_archived = :isArchived WHERE chat_id = :chatId")
+    suspend fun setChatArchived(chatId: String, isArchived: Boolean)
+
+    @Query("SELECT is_muted FROM chats WHERE chat_id = :chatId LIMIT 1")
+    suspend fun isChatMuted(chatId: String): Boolean?
 
     @Query("UPDATE chats SET unread_count = unread_count + 1 WHERE chat_id = :chatId")
     suspend fun incrementUnread(chatId: String)

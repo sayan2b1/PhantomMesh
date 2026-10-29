@@ -39,6 +39,8 @@ class SessionManager @Inject constructor(
         private const val KEY_CHAT_FONT_STYLE = "session_chat_font_style"
         private const val KEY_CHAT_FONT_SIZE_SCALE = "session_chat_font_size_scale"
         private const val KEY_PREFERRED_REFRESH_RATE = "session_preferred_refresh_rate"
+        private const val KEY_BLOCKED_USERS = "session_blocked_users"
+        private const val KEY_DND_ENABLED = "session_dnd_enabled"
 
         /** 24 Hours in milliseconds */
         const val SESSION_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000L
@@ -94,6 +96,14 @@ class SessionManager @Inject constructor(
 
     private val _preferredRefreshRateFlow = MutableStateFlow(prefs.getInt(KEY_PREFERRED_REFRESH_RATE, 0))
     val preferredRefreshRateFlow: StateFlow<Int> = _preferredRefreshRateFlow.asStateFlow()
+
+    private val _blockedUsersFlow = MutableStateFlow<Set<String>>(
+        prefs.getStringSet(KEY_BLOCKED_USERS, emptySet())?.toSet() ?: emptySet()
+    )
+    val blockedUsersFlow: StateFlow<Set<String>> = _blockedUsersFlow.asStateFlow()
+
+    private val _dndEnabledFlow = MutableStateFlow(prefs.getBoolean(KEY_DND_ENABLED, false))
+    val dndEnabledFlow: StateFlow<Boolean> = _dndEnabledFlow.asStateFlow()
 
     /**
      * Persists session credentials immediately and stamps the current time.
@@ -204,6 +214,52 @@ class SessionManager @Inject constructor(
     fun setPreferredRefreshRate(rate: Int) {
         prefs.edit().putInt(KEY_PREFERRED_REFRESH_RATE, rate).commit()
         _preferredRefreshRateFlow.value = rate
+    }
+
+    // ── BLOCKED USERS MANAGEMENT ──────────────────────────────
+    private fun cleanBlockTarget(target: String): String {
+        return target.lowercase().trim()
+            .removePrefix("peer ")
+            .removePrefix("peer-")
+            .removePrefix("peer: ")
+            .trim()
+    }
+
+    fun getBlockedUsers(): Set<String> {
+        return prefs.getStringSet(KEY_BLOCKED_USERS, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun isUserBlocked(usernameOrId: String?): Boolean {
+        if (usernameOrId.isNullOrBlank()) return false
+        val clean = cleanBlockTarget(usernameOrId)
+        val currentSet = getBlockedUsers()
+        return currentSet.any { cleanBlockTarget(it) == clean }
+    }
+
+    fun blockUser(usernameOrId: String) {
+        if (usernameOrId.isBlank()) return
+        val clean = cleanBlockTarget(usernameOrId)
+        val current = getBlockedUsers().toMutableSet()
+        current.add(clean)
+        prefs.edit().putStringSet(KEY_BLOCKED_USERS, current).commit()
+        _blockedUsersFlow.value = current
+    }
+
+    fun unblockUser(usernameOrId: String) {
+        if (usernameOrId.isBlank()) return
+        val clean = cleanBlockTarget(usernameOrId)
+        val current = getBlockedUsers().toMutableSet()
+        current.removeAll { cleanBlockTarget(it) == clean }
+        prefs.edit().putStringSet(KEY_BLOCKED_USERS, current).commit()
+        _blockedUsersFlow.value = current
+    }
+
+    // ── DO NOT DISTURB (DND) MODE ─────────────────────────────
+    fun isDndEnabled(): Boolean = prefs.getBoolean(KEY_DND_ENABLED, false)
+
+    fun setDndEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_DND_ENABLED, enabled).commit()
+        _dndEnabledFlow.value = enabled
     }
 
     /**

@@ -31,20 +31,30 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.ui.draw.rotate
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.LaunchedEffect
 import com.phantom.mesh.util.HardwareStateUtil
 import com.phantom.mesh.ui.theme.WarningAmber
+import com.phantom.mesh.ui.theme.NeonGreen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -94,10 +104,13 @@ fun ChatListScreen(
     onChatClick: (chatId: String, targetId: String) -> Unit,
     onNavigateTopology: () -> Unit,
     onNavigateDropZone: () -> Unit,
+    onNavigateCallHistory: () -> Unit,
     onNavigateSettings: () -> Unit
 ) {
     val transport by viewModel.activeTransport.collectAsState()
     val chats by viewModel.chats.collectAsState()
+    val archivedChats by viewModel.archivedChats.collectAsState()
+    val isDndEnabled by viewModel.isDndEnabled.collectAsState()
     val isDuress by viewModel.isDuressSession.collectAsState()
     val currentUsername by viewModel.currentUsername.collectAsState()
     val currentUserId by viewModel.currentUserId.collectAsState()
@@ -119,6 +132,9 @@ fun ChatListScreen(
     var showNewChatDialog by remember { mutableStateOf(false) }
     var newChatPeerId by remember { mutableStateOf("") }
     var chatForAliasEdit by remember { mutableStateOf<ChatEntity?>(null) }
+    var selectedChatForActions by remember { mutableStateOf<ChatEntity?>(null) }
+    var chatToDelete by remember { mutableStateOf<ChatEntity?>(null) }
+    var showArchivedChats by remember { mutableStateOf(false) }
     var aliasInput by remember { mutableStateOf("") }
 
     val context = LocalContext.current
@@ -170,6 +186,15 @@ fun ChatListScreen(
 
                     Spacer(modifier = Modifier.width(4.dp))
 
+                    // Call History Button (Feature 2)
+                    IconButton(onClick = onNavigateCallHistory) {
+                        Icon(
+                            imageVector = Icons.Default.Phone,
+                            contentDescription = "Call History",
+                            tint = NeonCyan
+                        )
+                    }
+
                     // Topology Radar Button with live sweep animation
                     IconButton(onClick = onNavigateTopology) {
                         Icon(
@@ -209,6 +234,54 @@ fun ChatListScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Feature 4: Do Not Disturb quick status banner
+            if (isDndEnabled) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DuressCrimson.copy(alpha = 0.12f))
+                        .border(1.dp, DuressCrimson.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                        .clickable {
+                            viewModel.setDndEnabled(false)
+                            Toast.makeText(context, "Do Not Disturb turned OFF", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.NotificationsOff,
+                            contentDescription = null,
+                            tint = DuressCrimson,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Do Not Disturb Active",
+                                color = DuressCrimson,
+                                fontSize = 12.sp,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = "All message & call alerts silenced. Tap to turn OFF.",
+                                color = TextMuted,
+                                fontSize = 10.sp
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                viewModel.setDndEnabled(false)
+                                Toast.makeText(context, "Do Not Disturb turned OFF", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Text("TURN OFF", color = NeonCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+            }
             // Hardware state warning banners for Wi-Fi, Bluetooth, and Location
             if (isBtOnly) {
                 Box(
@@ -350,7 +423,50 @@ fun ChatListScreen(
                 }
             }
 
-            if (chats.isEmpty()) {
+            // Feature 5: Archived Chats Access Header
+            if (archivedChats.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(DarkCard)
+                        .border(1.dp, NeonCyan.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                        .clickable { showArchivedChats = !showArchivedChats }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Archive,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Archived Conversations (${archivedChats.size})",
+                                color = TextPrimary,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Text(
+                            text = if (showArchivedChats) "HIDE" else "VIEW",
+                            color = NeonCyan,
+                            fontSize = 11.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            if (chats.isEmpty() && (!showArchivedChats || archivedChats.isEmpty())) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -383,6 +499,46 @@ fun ChatListScreen(
                         .fillMaxSize()
                         .weight(1f)
                 ) {
+                    // Show archived chats if toggled open
+                    if (showArchivedChats && archivedChats.isNotEmpty()) {
+                        item(key = "header_archived") {
+                            Text(
+                                text = "ARCHIVED CONVERSATIONS",
+                                color = NeonCyan,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                        items(archivedChats, key = { "archived_" + it.chatId }) { chat ->
+                            val resolvedTarget = chat.participants.split(",").map { it.trim() }.firstOrNull {
+                                it.isNotBlank() && !it.equals(currentUsername, ignoreCase = true) && !it.equals(currentUserId, ignoreCase = true)
+                            } ?: (chat.chatTitle ?: chat.participants)
+                            val formattedTitle = viewModel.getFormattedDisplayName(resolvedTarget)
+                            ChatItem(
+                                chat = chat,
+                                displayName = formattedTitle,
+                                modifier = Modifier.animateItem(),
+                                onClick = { onChatClick(chat.chatId, resolvedTarget) },
+                                onLongClick = {
+                                    selectedChatForActions = chat
+                                }
+                            )
+                        }
+                        item(key = "divider_archived") {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(Color.White.copy(alpha = 0.1f))
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                    }
+
+                    // Feature 6: Active chats properly sequenced by most recent message
                     items(chats, key = { it.chatId }) { chat ->
                         val resolvedTarget = chat.participants.split(",").map { it.trim() }.firstOrNull {
                             it.isNotBlank() && !it.equals(currentUsername, ignoreCase = true) && !it.equals(currentUserId, ignoreCase = true)
@@ -394,9 +550,7 @@ fun ChatListScreen(
                             modifier = Modifier.animateItem(),
                             onClick = { onChatClick(chat.chatId, resolvedTarget) },
                             onLongClick = {
-                                val cleanTarget = resolvedTarget.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim()
-                                aliasInput = viewModel.getAlias(cleanTarget) ?: ""
-                                chatForAliasEdit = chat
+                                selectedChatForActions = chat
                             }
                         )
                     }
@@ -602,6 +756,179 @@ fun ChatListScreen(
             containerColor = DarkCard
         )
     }
+
+    // Chat Actions BottomSheet (Edit Alias, Mute/Unmute, Archive/Unarchive, Delete Chat)
+    if (selectedChatForActions != null) {
+        val targetChat = selectedChatForActions!!
+        val resolvedTarget = targetChat.participants.split(",").map { it.trim() }.firstOrNull {
+            it.isNotBlank() && !it.equals(currentUsername, ignoreCase = true) && !it.equals(currentUserId, ignoreCase = true)
+        } ?: (targetChat.chatTitle ?: targetChat.participants)
+        val rawUser = resolvedTarget
+            .removePrefix("Peer ")
+            .removePrefix("Peer-")
+            .removePrefix("PEER: ")
+            .trim()
+            .ifBlank { "User" }
+        val formattedTitle = viewModel.getFormattedDisplayName(rawUser)
+        val isMuted = targetChat.isMuted
+        val isArchived = targetChat.isArchived
+
+        ModalBottomSheet(
+            onDismissRequest = { selectedChatForActions = null },
+            containerColor = DarkCard,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            ) {
+                Text(
+                    text = formattedTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = NeonCyan,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "@$rawUser",
+                    fontSize = 11.sp,
+                    color = TextMuted,
+                    fontFamily = FontFamily.Monospace
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Action 1: Edit Contact Name
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            val cleanTarget = rawUser
+                            aliasInput = viewModel.getAlias(cleanTarget) ?: ""
+                            chatForAliasEdit = targetChat
+                            selectedChatForActions = null
+                        }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(imageVector = Icons.Default.Badge, contentDescription = null, tint = NeonCyan)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(text = "Edit Contact Name", color = TextPrimary, fontSize = 14.sp)
+                }
+
+                // Action 2: Mute / Unmute
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            viewModel.toggleMuteChat(targetChat)
+                            selectedChatForActions = null
+                            Toast.makeText(context, if (isMuted) "Notifications unmuted" else "Notifications muted", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isMuted) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                        contentDescription = null,
+                        tint = NeonCyan
+                    )
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(text = if (isMuted) "Unmute Notifications" else "Mute Notifications", color = TextPrimary, fontSize = 14.sp)
+                }
+
+                // Action 3: Archive / Unarchive
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            viewModel.toggleArchiveChat(targetChat)
+                            selectedChatForActions = null
+                            Toast.makeText(context, if (isArchived) "Chat unarchived" else "Chat moved to Archive", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
+                        contentDescription = null,
+                        tint = NeonCyan
+                    )
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(text = if (isArchived) "Unarchive Conversation" else "Archive Conversation", color = TextPrimary, fontSize = 14.sp)
+                }
+
+                // Action 4: Delete Chat
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            chatToDelete = targetChat
+                            selectedChatForActions = null
+                        }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = DuressCrimson)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(text = "Delete Chat", color = DuressCrimson, fontSize = 14.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+            }
+        }
+    }
+
+    // Delete Chat Confirmation Dialog
+    if (chatToDelete != null) {
+        val target = chatToDelete!!
+        val resolvedTarget = target.participants.split(",").map { it.trim() }.firstOrNull {
+            it.isNotBlank() && !it.equals(currentUsername, ignoreCase = true) && !it.equals(currentUserId, ignoreCase = true)
+        } ?: (target.chatTitle ?: target.participants)
+        val formattedTitle = viewModel.getFormattedDisplayName(resolvedTarget)
+
+        AlertDialog(
+            onDismissRequest = { chatToDelete = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = DuressCrimson)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Delete Conversation?", color = TextPrimary)
+                }
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to permanently delete this chat with $formattedTitle and all its messages?",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteChat(target.chatId)
+                        chatToDelete = null
+                        Toast.makeText(context, "Conversation deleted", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("DELETE", color = DuressCrimson, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { chatToDelete = null }) {
+                    Text("CANCEL", color = TextMuted)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -652,13 +979,27 @@ fun ChatItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = displayName,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Text(
+                        text = displayName,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (chat.isMuted) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.VolumeOff,
+                            contentDescription = "Muted",
+                            tint = TextMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
                 Text(
                     text = timeFormatted,
                     style = MaterialTheme.typography.labelSmall,

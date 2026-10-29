@@ -649,10 +649,12 @@ class MeshConnectionManager @Inject constructor(
             isForMe -> {
                 when (packet.dataType) {
                     "ack" -> {
-                        // ACK received — update delivery status to "delivered"
+                        // ACK received — update delivery status
                         _incomingAcks.emit(packet)
-                        packet.refMessageId?.let { msgId ->
-                            messageDao.updateDeliveryStatus(msgId, "delivered")
+                        if (packet.data != "read") {
+                            packet.refMessageId?.let { msgId ->
+                                messageDao.updateDeliveryStatus(msgId, "delivered")
+                            }
                         }
                     }
                     "routing" -> {
