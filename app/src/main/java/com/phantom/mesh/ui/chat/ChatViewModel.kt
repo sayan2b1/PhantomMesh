@@ -36,6 +36,7 @@ class ChatViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager,
     private val callManager: CallManager,
+    private val typingStatusManager: com.phantom.mesh.util.TypingStatusManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -43,6 +44,44 @@ class ChatViewModel @Inject constructor(
     val targetId: String = checkNotNull(savedStateHandle["targetId"])
 
     val activeTransport: StateFlow<NetworkTransport> = networkStateManager.activeTransport
+
+    val peerTypingState: StateFlow<com.phantom.mesh.util.TypingStatusManager.TypingState> =
+        typingStatusManager.getPeerTypingState(chatId)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE)
+
+    val draftMessage: StateFlow<String?> = kotlinx.coroutines.flow.flow {
+        emit(chatRepository.getDraft(chatId))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun onUserTyping(text: String) {
+        if (text.isNotBlank()) {
+            typingStatusManager.setUserTyping(chatId, targetId)
+        } else {
+            typingStatusManager.setUserIdle(chatId, targetId)
+        }
+    }
+
+    fun onUserIdle() {
+        typingStatusManager.setUserIdle(chatId, targetId)
+    }
+
+    fun onVoiceRecordingStarted() {
+        typingStatusManager.setUserRecording(chatId, targetId)
+    }
+
+    fun onVoiceRecordingStopped() {
+        typingStatusManager.setUserIdle(chatId, targetId)
+    }
+
+    fun saveDraft(draft: String) {
+        viewModelScope.launch {
+            chatRepository.saveDraft(chatId, targetId, draft)
+        }
+    }
+
+    suspend fun getDraft(): String? {
+        return chatRepository.getDraft(chatId)
+    }
 
     val messages: StateFlow<List<MessageEntity>> = chatRepository.observeMessages(chatId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -259,6 +298,7 @@ class ChatViewModel @Inject constructor(
     override fun onCleared() {
         cloudReceiptListener?.remove()
         cloudReceiptListener = null
+        typingStatusManager.setUserIdle(chatId, targetId)
         if (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == chatId) {
             com.phantom.mesh.util.NotificationHelper.currentActiveChatId = null
         }
@@ -269,6 +309,8 @@ class ChatViewModel @Inject constructor(
         if (text.isBlank()) return
         val reply = _activeReply.value
         _activeReply.value = null
+        typingStatusManager.setUserIdle(chatId, targetId)
+        saveDraft("")
         viewModelScope.launch {
             try {
                 chatRepository.sendTextMessage(
@@ -284,6 +326,10 @@ class ChatViewModel @Inject constructor(
                 android.util.Log.e("ChatViewModel", "Error in sendMessage: ${e.message}", e)
             }
         }
+    }
+
+    suspend fun getMessageById(messageId: String): MessageEntity? {
+        return chatRepository.getMessageById(messageId)
     }
 
     fun sendMedia(file: File, mimeType: String, dataType: String = "image") {
@@ -302,6 +348,22 @@ class ChatViewModel @Inject constructor(
                 chatRepository.sendVoiceMessage(chatId, targetId, file, durationMs)
             } catch (e: Exception) {
                 android.util.Log.e("ChatViewModel", "Error in sendVoiceMessage: ${e.message}", e)
+            }
+        }
+    }
+
+    fun editMessage(message: MessageEntity, newContent: String) {
+        if (newContent.isBlank() || newContent == message.content) return
+        val elapsed = System.currentTimeMillis() - message.timestamp
+        if (elapsed > 20 * 60 * 1000L) {
+            // Strictly enforce 20 minute limit
+            return
+        }
+        viewModelScope.launch {
+            try {
+                chatRepository.editMessage(chatId, targetId, message.messageId, newContent.trim())
+            } catch (e: Exception) {
+                android.util.Log.e("ChatViewModel", "Error in editMessage: ${e.message}", e)
             }
         }
     }

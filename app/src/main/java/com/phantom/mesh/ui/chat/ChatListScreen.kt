@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
@@ -117,6 +118,7 @@ fun ChatListScreen(
     val isBtOnly by viewModel.isBluetoothOnlyMode.collectAsState()
     val connectedPeers by viewModel.connectedPeers.collectAsState()
     val contactAliases by viewModel.contactAliases.collectAsState()
+    val peerTypingStates by viewModel.peerTypingStates.collectAsState()
 
     val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
     val radarRotation by infiniteTransition.animateFloat(
@@ -520,6 +522,7 @@ fun ChatListScreen(
                                 chat = chat,
                                 displayName = formattedTitle,
                                 modifier = Modifier.animateItem(),
+                                typingState = peerTypingStates[chat.chatId] ?: com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE,
                                 onClick = { onChatClick(chat.chatId, resolvedTarget) },
                                 onLongClick = {
                                     selectedChatForActions = chat
@@ -548,6 +551,7 @@ fun ChatListScreen(
                             chat = chat,
                             displayName = formattedTitle,
                             modifier = Modifier.animateItem(),
+                            typingState = peerTypingStates[chat.chatId] ?: com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE,
                             onClick = { onChatClick(chat.chatId, resolvedTarget) },
                             onLongClick = {
                                 selectedChatForActions = chat
@@ -937,6 +941,7 @@ fun ChatItem(
     chat: ChatEntity,
     displayName: String,
     modifier: Modifier = Modifier,
+    typingState: com.phantom.mesh.util.TypingStatusManager.TypingState = com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {}
 ) {
@@ -1015,14 +1020,67 @@ fun ChatItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = chat.lastMessagePreview ?: "No messages yet",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (chat.unreadCount > 0) TextPrimary else TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                if (typingState == com.phantom.mesh.util.TypingStatusManager.TypingState.TYPING) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "typing",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = NeonCyan,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        com.phantom.mesh.ui.chat.AnimatedTypingDots(color = NeonCyan)
+                    }
+                } else if (typingState == com.phantom.mesh.util.TypingStatusManager.TypingState.RECORDING) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = null,
+                            tint = Color(0xFFFF9800),
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "recording audio...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFFF9800),
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                    }
+                } else if (!chat.draftMessage.isNullOrBlank()) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Draft: ",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF00E676),
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Text(
+                            text = chat.draftMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else {
+                    Text(
+                        text = chat.lastMessagePreview ?: "No messages yet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (chat.unreadCount > 0) TextPrimary else TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
 
                 // Transport indicator tag
                 Box(

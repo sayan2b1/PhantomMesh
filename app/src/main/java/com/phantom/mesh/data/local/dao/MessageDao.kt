@@ -30,7 +30,10 @@ interface MessageDao {
         ORDER BY timestamp DESC 
         LIMIT :limit OFFSET :offset
     """)
-    fun observeMessages(chatId: String, limit: Int = 50, offset: Int = 0): Flow<List<MessageEntity>>
+    fun observeMessages(chatId: String, limit: Int = 500, offset: Int = 0): Flow<List<MessageEntity>>
+
+    @Query("UPDATE messages SET media_local_uri = :localUri WHERE message_id = :messageId")
+    suspend fun updateMediaLocalUri(messageId: String, localUri: String)
 
     /** All messages for a chat (non-paginated, for export/sync) */
     @Query("SELECT * FROM messages WHERE chat_id = :chatId ORDER BY timestamp ASC")
@@ -157,6 +160,12 @@ interface MessageDao {
         peerUsername: String = "",
         chatId: String = ""
     )
+
+    @Query("SELECT * FROM messages WHERE chat_id = :chatId ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLatestMessageForChat(chatId: String): MessageEntity?
+
+    @Query("UPDATE messages SET content = :newContent, is_edited = 1, edited_at = :editedAt WHERE message_id = :messageId")
+    suspend fun updateMessageContent(messageId: String, newContent: String, editedAt: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM messages WHERE chat_id = :chatId")
     suspend fun deleteMessagesForChat(chatId: String)

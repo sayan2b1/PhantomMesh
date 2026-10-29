@@ -93,5 +93,12 @@ data class MessageEntity(
 
     /** Sender name of the message being replied to */
     @ColumnInfo(name = "reply_to_sender")
-    val replyToSender: String? = null
+    val replyToSender: String? = null,
+
+    /** Whether message was edited within 20 minutes window */
+    @ColumnInfo(name = "is_edited")
+    val isEdited: Boolean = false,
+
+    @ColumnInfo(name = "edited_at")
+    val editedAt: Long? = null
 )

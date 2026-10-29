@@ -1,8 +1,11 @@
 package com.phantom.mesh.util
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
-import android.net.Uri
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -17,14 +20,15 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Singleton or reusable manager for playing voice messages.
- * Automatically resolves local files or inline data URIs and emits playback progress.
+ * Singleton manager for playing voice notes and audio messages.
+ * Guarantees that only ONE voice message can EVER play at any given time.
+ * If playback is triggered for another voice message, any active or buffering
+ * playback is immediately stopped and released before starting the newly selected message.
  */
-class VoicePlayerManager {
+object VoicePlayerManager {
 
-    companion object {
-        private const val TAG = "VoicePlayerManager"
-    }
+    private const val TAG = "VoicePlayerManager"
+    private val lock = Any()
 
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
@@ -46,101 +50,199 @@ class VoicePlayerManager {
     val totalDurationMs: StateFlow<Int> = _totalDurationMs.asStateFlow()
 
     fun togglePlay(context: Context, messageId: String, localUri: String?, cloudUrl: String?) {
-        if (_activePlayingMessageId.value == messageId && _isPlaying.value) {
-            pause()
-            return
-        }
-
-        if (_activePlayingMessageId.value == messageId && mediaPlayer != null && !_isPlaying.value) {
-            resume()
-            return
-        }
-
-        stop()
-
-        val resolvedFile = resolveAudioSource(context, messageId, localUri, cloudUrl)
-        if (resolvedFile != null && resolvedFile.exists()) {
-            try {
-                val player = MediaPlayer().apply {
-                    setDataSource(resolvedFile.absolutePath)
-                    prepare()
-                    setOnCompletionListener {
-                        stop()
-                    }
-                }
-
-                mediaPlayer = player
-                _activePlayingMessageId.value = messageId
-                _totalDurationMs.value = player.duration.coerceAtLeast(1)
-                player.start()
-                _isPlaying.value = true
-                startProgressTracker()
+        synchronized(lock) {
+            // If the same message is currently playing -> pause it
+            if (_activePlayingMessageId.value == messageId && _isPlaying.value) {
+                pause()
                 return
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed playing local audio: ${e.message}", e)
             }
-        }
 
-        if (cloudUrl?.startsWith("http") == true) {
-            try {
-                val player = MediaPlayer().apply {
-                    setDataSource(cloudUrl)
-                    setOnPreparedListener { mp ->
-                        mp.start()
-                        _isPlaying.value = true
-                        _activePlayingMessageId.value = messageId
-                        _totalDurationMs.value = mp.duration.coerceAtLeast(1)
-                        startProgressTracker()
-                    }
-                    setOnCompletionListener {
-                        stop()
-                    }
-                    prepareAsync()
-                }
-                mediaPlayer = player
+            // If the same message was paused -> resume it
+            if (_activePlayingMessageId.value == messageId && mediaPlayer != null && !_isPlaying.value) {
+                resume()
                 return
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed streaming remote audio: ${e.message}", e)
             }
-        }
 
-        Log.w(TAG, "Audio file could not be resolved for message $messageId")
+            // A different voice message was selected:
+            // Immediately stop, reset and release the previous player
+            stopInternal()
+
+            _activePlayingMessageId.value = messageId
+
+            val resolvedFile = resolveAudioSource(context, messageId, localUri, cloudUrl)
+            if (resolvedFile != null && resolvedFile.exists()) {
+                try {
+                    val player = MediaPlayer().apply {
+                        setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .build()
+                        )
+                        setDataSource(resolvedFile.absolutePath)
+                        prepare()
+                        setOnCompletionListener {
+                            stop()
+                        }
+                        setOnErrorListener { _, _, _ ->
+                            stop()
+                            true
+                        }
+                    }
+
+                    mediaPlayer = player
+                    _totalDurationMs.value = player.duration.coerceAtLeast(1)
+                    requestAudioFocus(context)
+                    player.start()
+                    _isPlaying.value = true
+                    startProgressTracker()
+                    return
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed playing local audio for $messageId: ${e.message}", e)
+                    stopInternal()
+                }
+            }
+
+            if (cloudUrl?.startsWith("http") == true) {
+                try {
+                    val targetMessageId = messageId
+                    val player = MediaPlayer().apply {
+                        setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .build()
+                        )
+                        setDataSource(cloudUrl)
+                        setOnPreparedListener { mp ->
+                            synchronized(lock) {
+                                // Strictly ensure user didn't switch to another voice message while buffering
+                                if (_activePlayingMessageId.value != targetMessageId) {
+                                    try {
+                                        mp.setOnPreparedListener(null)
+                                        mp.setOnCompletionListener(null)
+                                        mp.setOnErrorListener(null)
+                                        mp.reset()
+                                        mp.release()
+                                    } catch (_: Exception) {}
+                                    return@setOnPreparedListener
+                                }
+                                try {
+                                    requestAudioFocus(context)
+                                    mp.start()
+                                    _isPlaying.value = true
+                                    _totalDurationMs.value = mp.duration.coerceAtLeast(1)
+                                    startProgressTracker()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Error starting remote stream for $targetMessageId: ${e.message}", e)
+                                    stopInternal()
+                                }
+                            }
+                        }
+                        setOnCompletionListener {
+                            stop()
+                        }
+                        setOnErrorListener { mp, _, _ ->
+                            synchronized(lock) {
+                                try {
+                                    mp.reset()
+                                    mp.release()
+                                } catch (_: Exception) {}
+                                if (_activePlayingMessageId.value == targetMessageId) {
+                                    stopInternal()
+                                }
+                            }
+                            true
+                        }
+                        prepareAsync()
+                    }
+                    mediaPlayer = player
+                    return
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed streaming remote audio for $messageId: ${e.message}", e)
+                    stopInternal()
+                }
+            }
+
+            Log.w(TAG, "Audio source could not be resolved for message $messageId")
+            stopInternal()
+        }
     }
 
     private fun resume() {
-        try {
-            mediaPlayer?.start()
-            _isPlaying.value = true
-            startProgressTracker()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error resuming player: ${e.message}", e)
-            stop()
+        synchronized(lock) {
+            try {
+                mediaPlayer?.start()
+                _isPlaying.value = true
+                startProgressTracker()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error resuming player: ${e.message}", e)
+                stopInternal()
+            }
         }
     }
 
     fun pause() {
-        try {
-            mediaPlayer?.pause()
-        } catch (ignored: Exception) {}
-        _isPlaying.value = false
-        progressJob?.cancel()
+        synchronized(lock) {
+            try {
+                mediaPlayer?.pause()
+            } catch (ignored: Exception) {}
+            _isPlaying.value = false
+            progressJob?.cancel()
+        }
     }
 
-    fun stop() {
+    private fun stopInternal() {
         progressJob?.cancel()
         progressJob = null
         try {
             mediaPlayer?.apply {
-                if (isPlaying) stop()
-                release()
+                setOnPreparedListener(null)
+                setOnCompletionListener(null)
+                setOnErrorListener(null)
+                try {
+                    if (isPlaying) stop()
+                } catch (_: Exception) {}
+                try {
+                    reset()
+                } catch (_: Exception) {}
+                try {
+                    release()
+                } catch (_: Exception) {}
             }
-        } catch (ignored: Exception) {}
+        } catch (_: Exception) {}
         mediaPlayer = null
         _activePlayingMessageId.value = null
         _isPlaying.value = false
         _playbackProgress.value = 0f
         _currentPositionMs.value = 0
         _totalDurationMs.value = 0
+    }
+
+    fun stop() {
+        synchronized(lock) {
+            stopInternal()
+        }
+    }
+
+    private fun requestAudioFocus(context: Context) {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .build()
+                    )
+                    .build()
+                audioManager.requestAudioFocus(focusRequest)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            }
+        } catch (ignored: Exception) {}
     }
 
     private fun startProgressTracker() {
