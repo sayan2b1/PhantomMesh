@@ -120,6 +120,28 @@ interface MessageDao {
     """)
     suspend fun markSentMessagesAsDeliveredByChat(chatId: String, myUserId: String, myUsername: String)
 
+    /** Mark sent messages in a chat as read if sent on or before readTimestamp (with 5s clock-skew tolerance) */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'read' 
+        WHERE chat_id = :chatId 
+          AND (sender_id = :myUserId OR sender_id = :myUsername OR target_id != :myUserId)
+          AND timestamp <= (:readTimestamp + 5000)
+          AND delivery_status != 'read'
+    """)
+    suspend fun markSentMessagesAsReadBefore(chatId: String, myUserId: String, myUsername: String, readTimestamp: Long)
+
+    /** Mark sent messages in a chat as delivered if sent on or before deliveredTimestamp (with 5s clock-skew tolerance) */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'delivered' 
+        WHERE chat_id = :chatId 
+          AND (sender_id = :myUserId OR sender_id = :myUsername OR target_id != :myUserId)
+          AND timestamp <= (:deliveredTimestamp + 5000)
+          AND delivery_status IN ('saved', 'mesh_sent')
+    """)
+    suspend fun markSentMessagesAsDeliveredBefore(chatId: String, myUserId: String, myUsername: String, deliveredTimestamp: Long)
+
     /** Mark all sent messages to a peer as read when peer sends read receipt ACK */
     @Query("""
         UPDATE messages 
