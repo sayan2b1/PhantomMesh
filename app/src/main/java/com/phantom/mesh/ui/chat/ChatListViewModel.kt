@@ -12,6 +12,7 @@ import com.phantom.mesh.network.NetworkTransport
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import com.phantom.mesh.mesh.MeshRoutingTable
@@ -32,8 +33,17 @@ class ChatListViewModel @Inject constructor(
 
     val connectedPeers: StateFlow<List<MeshRoutingTable.MeshNode>> = routingTable.topology
 
+    // Feature 6: Ensure chats are strictly sequenced with the most recent at the top
     val chats: StateFlow<List<ChatEntity>> = chatRepository.observeActiveChats()
+        .map { list -> list.sortedByDescending { maxOf(it.lastMessageTimestamp, it.createdAt) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val archivedChats: StateFlow<List<ChatEntity>> = chatRepository.observeArchivedChats()
+        .map { list -> list.sortedByDescending { maxOf(it.lastMessageTimestamp, it.createdAt) } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val isDndEnabled: StateFlow<Boolean> = sessionManager.dndEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val isDuressSession: StateFlow<Boolean> = sessionManager.isDuressFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -44,6 +54,28 @@ class ChatListViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val contactAliases: StateFlow<Map<String, String>> = contactAliasManager.aliasesFlow
+
+    fun setDndEnabled(enabled: Boolean) {
+        sessionManager.setDndEnabled(enabled)
+    }
+
+    fun deleteChat(chatId: String) {
+        viewModelScope.launch {
+            chatRepository.deleteChatAndMessages(chatId)
+        }
+    }
+
+    fun toggleMuteChat(chat: ChatEntity) {
+        viewModelScope.launch {
+            chatRepository.setChatMuted(chat.chatId, !chat.isMuted)
+        }
+    }
+
+    fun toggleArchiveChat(chat: ChatEntity) {
+        viewModelScope.launch {
+            chatRepository.setChatArchived(chat.chatId, !chat.isArchived)
+        }
+    }
 
     fun getFormattedDisplayName(usernameOrId: String): String {
         return contactAliasManager.getFormattedDisplayName(usernameOrId)

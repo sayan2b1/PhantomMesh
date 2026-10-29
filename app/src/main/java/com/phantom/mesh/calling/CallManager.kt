@@ -14,6 +14,8 @@ import com.google.firebase.firestore.SetOptions
 import com.google.gson.Gson
 import com.phantom.mesh.calling.webrtc.WebRtcClient
 import com.phantom.mesh.calling.webrtc.WebRtcSignalingManager
+import com.phantom.mesh.data.local.dao.CallLogDao
+import com.phantom.mesh.data.local.entity.CallLogEntity
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshPacket
@@ -96,7 +98,8 @@ class CallManager @Inject constructor(
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
     private val meshConnectionManagerProvider: Provider<MeshConnectionManager>,
-    private val notificationHelperProvider: Provider<NotificationHelper>
+    private val notificationHelperProvider: Provider<NotificationHelper>,
+    private val callLogDao: CallLogDao
 ) {
     private val TAG = "CallManager"
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -278,6 +281,13 @@ class CallManager @Inject constructor(
         peerAddress: String,
         callType: CallType
     ): CallInitiationResult {
+        // Feature 3: Check if peer is blocked
+        if (sessionManager.isUserBlocked(peerUsername) || sessionManager.isUserBlocked(peerAddress)) {
+            val msg = "This contact is blocked. Unblock contact in Privacy & Security settings to call."
+            Log.w(TAG, msg)
+            return CallInitiationResult.BlockedByTransport(msg)
+        }
+
         val currentTransport = networkStateManager.activeTransport.value
         if (currentTransport is NetworkTransport.Offline && !meshConnectionManagerProvider.get().hasActivePeers() && !networkStateManager.isInternetAvailable.value) {
             val msg = "Device is offline. Connect to internet or Bluetooth mesh peer to start a call."
@@ -401,6 +411,36 @@ class CallManager @Inject constructor(
         transport: String = "mesh",
         peerNet: NetworkProfile? = null
     ) {
+        // Feature 3: Blocked contact check
+        if (sessionManager.isUserBlocked(peerUsername) || sessionManager.isUserBlocked(peerAddress)) {
+            Log.w(TAG, "Silently discarded incoming call from blocked peer: $peerUsername")
+            return
+        }
+
+        // Feature 4: Do Not Disturb check
+        if (sessionManager.isDndEnabled()) {
+            Log.i(TAG, "DND active: silently logged missed call from $peerUsername")
+            scope.launch(Dispatchers.IO) {
+                try {
+                    callLogDao.insertCallLog(
+                        CallLogEntity(
+                            callId = callId,
+                            peerUsername = peerUsername,
+                            peerAddress = peerAddress,
+                            callType = if (callType == CallType.VIDEO) "VIDEO" else "VOICE",
+                            direction = "MISSED",
+                            timestamp = System.currentTimeMillis(),
+                            durationSeconds = 0,
+                            status = "MISSED"
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to save DND missed call: ${e.message}")
+                }
+            }
+            return
+        }
+
         if (_currentCall.value != null && _currentCall.value?.status != CallStatus.ENDED) {
             Log.w(TAG, "Already in a call, ignoring incoming: $callId")
             return
@@ -979,6 +1019,11 @@ class CallManager @Inject constructor(
         durationTimerJob?.cancel()
         durationTimerJob = null
 
+        if (call != null) {
+            val status = if (call.status == CallStatus.INCOMING_RINGING) "REJECTED" else if (call.durationSeconds > 0) "COMPLETED" else "CANCELLED"
+            saveCallLogInDb(call, status)
+        }
+
         SoundEffectManager.stopRingtone()
         SoundEffectManager.playCallEndSound()
         notificationHelperProvider.get().cancelIncomingCallNotification()
@@ -1074,8 +1119,14 @@ class CallManager @Inject constructor(
     }
 
     private fun onCallEndedRemote(reason: String) {
+        val call = _currentCall.value
         durationTimerJob?.cancel()
         durationTimerJob = null
+
+        if (call != null) {
+            val status = if (call.status == CallStatus.INCOMING_RINGING) "MISSED" else if (call.durationSeconds > 0) "COMPLETED" else reason
+            saveCallLogInDb(call, status)
+        }
 
         SoundEffectManager.stopRingtone()
         SoundEffectManager.playCallEndSound()
@@ -1141,6 +1192,40 @@ class CallManager @Inject constructor(
         scope.launch {
             delay(1200)
             _currentCall.value = null
+        }
+    }
+
+    private fun saveCallLogInDb(call: ActiveCall, status: String, finalDuration: Int? = null) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val durSecondsInt = (finalDuration?.toLong() ?: call.durationSeconds).toInt()
+                val isOutgoing = !call.isIncoming
+                val direction = when {
+                    isOutgoing -> "OUTGOING"
+                    durSecondsInt > 0 || call.status == CallStatus.CONNECTED -> "INCOMING"
+                    else -> "MISSED"
+                }
+                val logStatus = when {
+                    durSecondsInt > 0 -> "COMPLETED"
+                    status.isNotBlank() -> status
+                    isOutgoing -> "CANCELLED"
+                    else -> "MISSED"
+                }
+                callLogDao.insertCallLog(
+                    CallLogEntity(
+                        callId = call.callId,
+                        peerUsername = call.peerUsername,
+                        peerAddress = call.peerAddress,
+                        callType = if (call.callType == CallType.VIDEO) "VIDEO" else "VOICE",
+                        direction = direction,
+                        timestamp = System.currentTimeMillis(),
+                        durationSeconds = durSecondsInt,
+                        status = logStatus
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save call log: ${e.message}")
+            }
         }
     }
 }

@@ -43,6 +43,7 @@ class DuressWipeManager @Inject constructor(
         database.dropZoneDao().nukeAllDrops()
         database.meshQueueDao().nukeQueue()
         database.userDao().nukeAllUsers()
+        database.callLogDao().nukeAllCallLogs()
 
         // Step 2: Wipe local media cache
         wipeMediaCache()

@@ -66,13 +66,18 @@ class ChatRepository @Inject constructor(
         // Listen for ACK packets bounced back from target peer
         scope.launch {
             meshConnectionManager.incomingAcks.collect { ackPacket ->
-                ackPacket.refMessageId?.let { originalMessageId ->
-                    val status = if (ackPacket.data == "read") "read" else "delivered"
-                    if (ackPacket.data == "read") {
-                        val currentUserId = sessionManager.getUserId() ?: ""
-                        messageDao.markChatMessagesAsReadByPeer(currentUserId, ackPacket.senderId)
+                ackPacket.refMessageId?.let { refId ->
+                    val isRead = ackPacket.data == "read"
+                    val currentUserId = sessionManager.getUserId() ?: ""
+                    val currentUsername = sessionManager.getUsername() ?: ""
+                    if (isRead) {
+                        messageDao.markSentMessagesAsReadByChat(refId, currentUserId, currentUsername)
+                        messageDao.updateDeliveryStatus(refId, "read")
+                        messageDao.markChatMessagesAsReadByPeer(currentUserId, ackPacket.senderId, currentUsername, ackPacket.senderId, refId)
+                    } else {
+                        messageDao.updateDeliveryStatus(refId, "delivered")
+                        messageDao.markSentMessagesAsDeliveredByChat(refId, currentUserId, currentUsername)
                     }
-                    messageDao.updateDeliveryStatus(originalMessageId, status)
                 }
             }
         }
@@ -92,6 +97,28 @@ class ChatRepository @Inject constructor(
 
     fun observeActiveChats(): Flow<List<ChatEntity>> = chatDao.observeActiveChats()
 
+    fun observeArchivedChats(): Flow<List<ChatEntity>> = chatDao.observeArchivedChats()
+
+    fun observeChat(chatId: String): Flow<ChatEntity?> = chatDao.observeChat(chatId)
+
+    suspend fun clearChat(chatId: String) = withContext(Dispatchers.IO) {
+        messageDao.deleteMessagesForChat(chatId)
+        chatDao.updateLastMessage(chatId, "", 0L, "cloud")
+    }
+
+    suspend fun deleteChatAndMessages(chatId: String) = withContext(Dispatchers.IO) {
+        messageDao.deleteMessagesForChat(chatId)
+        chatDao.deleteChat(chatId)
+    }
+
+    suspend fun setChatMuted(chatId: String, isMuted: Boolean) = withContext(Dispatchers.IO) {
+        chatDao.setChatMuted(chatId, isMuted)
+    }
+
+    suspend fun setChatArchived(chatId: String, isArchived: Boolean) = withContext(Dispatchers.IO) {
+        chatDao.setChatArchived(chatId, isArchived)
+    }
+
     fun observeMessages(chatId: String): Flow<List<MessageEntity>> = messageDao.observeMessages(chatId)
 
     suspend fun clearUnread(chatId: String) = withContext(Dispatchers.IO) {
@@ -102,18 +129,28 @@ class ChatRepository @Inject constructor(
         messageDao.getUnreadMessageIds(chatId, currentUserId)
     }
 
-    suspend fun markChatAsRead(chatId: String, currentUserId: String, sendReadReceipt: Boolean = true) = withContext(Dispatchers.IO) {
+    suspend fun markChatAsRead(
+        chatId: String,
+        currentUserId: String,
+        currentUsername: String? = null,
+        sendReadReceipt: Boolean = true
+    ) = withContext(Dispatchers.IO) {
+        val myName = currentUsername ?: sessionManager.getUsername() ?: currentUserId
         chatDao.clearUnread(chatId)
+        messageDao.markIncomingMessagesAsRead(chatId, currentUserId, myName)
+
         if (sendReadReceipt) {
-            messageDao.markIncomingMessagesAsRead(chatId, currentUserId)
+            // 1. Dispatch over Mesh
             try {
                 val chat = chatDao.getChatById(chatId)
-                val peerId = chat?.participants?.split(",")?.firstOrNull { it.isNotBlank() && it != currentUserId }
-                if (peerId != null) {
+                val peerTarget = chat?.participants?.split(",")?.map { it.trim() }
+                    ?.firstOrNull { it.isNotBlank() && !it.equals(currentUserId, ignoreCase = true) && !it.equals(myName, ignoreCase = true) }
+                    ?: chat?.chatTitle
+                if (!peerTarget.isNullOrBlank()) {
                     val readAck = com.phantom.mesh.mesh.MeshPacket(
                         packetId = "read_ack_${System.currentTimeMillis()}",
-                        senderId = currentUserId,
-                        targetId = peerId,
+                        senderId = myName,
+                        targetId = peerTarget,
                         data = "read",
                         dataType = "ack",
                         refMessageId = chatId
@@ -121,9 +158,114 @@ class ChatRepository @Inject constructor(
                     meshConnectionManager.sendPacket(readAck)
                 }
             } catch (e: Exception) {
-                android.util.Log.w("ChatRepository", "Failed to dispatch read receipt ACK: ${e.message}")
+                android.util.Log.w("ChatRepository", "Failed to dispatch read receipt ACK over mesh: ${e.message}")
+            }
+
+            // 2. Dispatch over Cloud (Firestore)
+            try {
+                val now = System.currentTimeMillis()
+                // Update parent chat metadata with read timestamp
+                val readUpdates = hashMapOf<String, Any>(
+                    "lastRead_${myName.lowercase()}" to now,
+                    "lastRead_${currentUserId}" to now
+                )
+                firestore.collection("chats")
+                    .document(chatId)
+                    .set(readUpdates, SetOptions.merge())
+
+                // Mark messages in this chat from the peer as read in Firestore
+                firestore.collection("chats")
+                    .document(chatId)
+                    .collection("messages")
+                    .limit(50)
+                    .get()
+                    .addOnSuccessListener { snapshot ->
+                        if (snapshot != null && !snapshot.isEmpty) {
+                            val batch = firestore.batch()
+                            var count = 0
+                            for (doc in snapshot.documents) {
+                                val senderId = doc.getString("senderId") ?: ""
+                                val senderUsername = doc.getString("senderUsername") ?: ""
+                                val isFromPeer = senderId != currentUserId && !senderUsername.equals(myName, ignoreCase = true)
+                                if (isFromPeer && doc.getString("deliveryStatus") != "read") {
+                                    batch.update(doc.reference, "deliveryStatus", "read")
+                                    count++
+                                }
+                            }
+                            if (count > 0) {
+                                batch.commit().addOnFailureListener { e ->
+                                    android.util.Log.w("ChatRepository", "Failed to commit cloud read receipts: ${e.message}")
+                                }
+                            }
+                        }
+                    }
+                    .addOnFailureListener { e ->
+                        android.util.Log.w("ChatRepository", "Failed to query messages for read receipt update: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                android.util.Log.w("ChatRepository", "Failed to dispatch cloud read receipt: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Backward-compatible overload for markChatAsRead.
+     */
+    suspend fun markChatAsRead(chatId: String, currentUserId: String, sendReadReceipt: Boolean) {
+        markChatAsRead(chatId, currentUserId, null, sendReadReceipt)
+    }
+
+    /**
+     * Attaches a real-time Firestore listener to the active chat's messages subcollection
+     * to immediately synchronize delivery status changes (sent -> delivered -> read).
+     */
+    fun attachCloudReceiptListener(
+        chatId: String,
+        currentUserId: String,
+        currentUsername: String
+    ): ListenerRegistration {
+        val myName = currentUsername.ifBlank { sessionManager.getUsername() ?: currentUserId }
+        android.util.Log.i("ChatRepository", "Attaching cloud receipt listener for chat $chatId")
+
+        return firestore.collection("chats")
+            .document(chatId)
+            .collection("messages")
+            .addSnapshotListener { snapshots, error ->
+                if (error != null) {
+                    android.util.Log.w("ChatRepository", "Cloud receipt listener error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snapshots == null) return@addSnapshotListener
+
+                scope.launch {
+                    try {
+                        for (change in snapshots.documentChanges) {
+                            val doc = change.document
+                            val messageId = doc.getString("messageId") ?: continue
+                            val senderId = doc.getString("senderId") ?: ""
+                            val senderUsername = doc.getString("senderUsername") ?: ""
+
+                            val isSentByMe = senderId == currentUserId || 
+                                             senderUsername.equals(myName, ignoreCase = true) ||
+                                             senderId.equals(myName, ignoreCase = true)
+
+                            if (isSentByMe) {
+                                val remoteStatus = doc.getString("deliveryStatus")
+                                if (remoteStatus == "read") {
+                                    messageDao.updateDeliveryStatus(messageId, "read")
+                                } else if (remoteStatus == "delivered") {
+                                    val localMsg = messageDao.getMessageById(messageId)
+                                    if (localMsg != null && localMsg.deliveryStatus != "read") {
+                                        messageDao.updateDeliveryStatus(messageId, "delivered")
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatRepository", "Error processing cloud receipts: ${e.message}", e)
+                    }
+                }
+            }
     }
 
     suspend fun syncUnreadCounts(currentUserId: String) = withContext(Dispatchers.IO) {
@@ -587,6 +729,7 @@ class ChatRepository @Inject constructor(
                 "mediaCloudUrl" to message.mediaCloudUrl,
                 "mimeType" to (message.mimeType ?: "image/jpeg"),
                 "mediaSizeBytes" to message.mediaSizeBytes,
+                "deliveryStatus" to "mesh_sent",
                 "timestamp" to message.timestamp,
                 "replyToMessageId" to message.replyToMessageId,
                 "replyToContent" to message.replyToContent,
@@ -716,6 +859,12 @@ class ChatRepository @Inject constructor(
             return
         }
 
+        // Feature 3: Discard packets from blocked peers
+        if (sessionManager.isUserBlocked(packet.senderId)) {
+            android.util.Log.i("ChatRepository", "Ignored mesh packet from blocked peer: ${packet.senderId}")
+            return
+        }
+
         // 1. Handle remote delete command IMMEDIATELY
         if (packet.dataType == "delete_msg") {
             val deletedMessageId = packet.data.trim().ifBlank { packet.refMessageId?.trim() ?: "" }
@@ -805,6 +954,10 @@ class ChatRepository @Inject constructor(
         val displayPreview = if (isImage) "[Image Attachment]" else if (isVoice) "🎤 Voice message" else if (isVideo) "[Video Attachment]" else packet.data
         ensureChatExists(chatId, senderIdentity, displayPreview, packet.timestamp, "mesh")
 
+        val isCurrentChatOpen = (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == chatId)
+        val isReadReceiptsOn = sessionManager.isReadReceiptsEnabled()
+        val initialStatus = if (isCurrentChatOpen) "read" else "delivered"
+
         val incomingMessage = MessageEntity(
             messageId = packet.packetId,
             chatId = chatId,
@@ -816,7 +969,7 @@ class ChatRepository @Inject constructor(
             mediaCloudUrl = cloudSource,
             mediaSizeBytes = packet.payloadSize,
             mimeType = if (isImage) "image/jpeg" else if (isVoice) "audio/mp4" else if (isVideo) "video/mp4" else null,
-            deliveryStatus = "delivered", // Already delivered to this target device
+            deliveryStatus = initialStatus,
             hopCount = packet.hopCount,
             transportUsed = "mesh",
             timestamp = packet.timestamp,
@@ -827,13 +980,29 @@ class ChatRepository @Inject constructor(
 
         try {
             messageDao.insertMessage(incomingMessage)
-            chatDao.incrementUnread(chatId)
-            notificationHelper.showNewMessageNotification(
-                chatId = chatId,
-                senderName = senderIdentity,
-                content = displayPreview,
-                dataType = packet.dataType
-            )
+            if (isCurrentChatOpen) {
+                chatDao.clearUnread(chatId)
+                if (isReadReceiptsOn) {
+                    val myUsername = sessionManager.getUsername() ?: currentUserId
+                    val readAck = com.phantom.mesh.mesh.MeshPacket(
+                        packetId = "read_ack_${System.currentTimeMillis()}",
+                        senderId = myUsername,
+                        targetId = packet.senderId,
+                        data = "read",
+                        dataType = "ack",
+                        refMessageId = chatId
+                    )
+                    meshConnectionManager.sendPacket(readAck)
+                }
+            } else {
+                chatDao.incrementUnread(chatId)
+                notificationHelper.showNewMessageNotification(
+                    chatId = chatId,
+                    senderName = senderIdentity,
+                    content = displayPreview,
+                    dataType = packet.dataType
+                )
+            }
         } catch (e: Exception) {
             android.util.Log.e("ChatRepository", "Failed to insert incoming mesh message: ${e.message}", e)
         }
@@ -909,10 +1078,40 @@ class ChatRepository @Inject constructor(
                                 continue
                             }
 
+                            if (change.type == DocumentChange.Type.MODIFIED) {
+                                val cloudStatus = doc.getString("deliveryStatus")
+                                if (cloudStatus == "read") {
+                                    messageDao.updateDeliveryStatus(messageId, "read")
+                                } else if (cloudStatus == "delivered") {
+                                    val localMsg = messageDao.getMessageById(messageId)
+                                    if (localMsg != null && localMsg.deliveryStatus != "read") {
+                                        messageDao.updateDeliveryStatus(messageId, "delivered")
+                                    }
+                                }
+                                continue
+                            }
+
                             if (change.type != DocumentChange.Type.ADDED) continue
 
                             // Skip messages sent by ourselves
-                            if (senderId == currentUserId) continue
+                            if (senderId == currentUserId || (currentUsername != null && doc.getString("senderUsername").equals(currentUsername, ignoreCase = true))) {
+                                val cloudStatus = doc.getString("deliveryStatus")
+                                if (cloudStatus == "read") {
+                                    messageDao.updateDeliveryStatus(messageId, "read")
+                                } else if (cloudStatus == "delivered") {
+                                    val localMsg = messageDao.getMessageById(messageId)
+                                    if (localMsg != null && localMsg.deliveryStatus != "read") {
+                                        messageDao.updateDeliveryStatus(messageId, "delivered")
+                                    }
+                                }
+                                continue
+                            }
+
+                            // Feature 3: Discard messages from blocked users
+                            val senderUsername = doc.getString("senderUsername") ?: senderId
+                            if (sessionManager.isUserBlocked(senderUsername) || sessionManager.isUserBlocked(senderId)) {
+                                continue
+                            }
 
                             // Skip if already in local DB
                             if (messageDao.getMessageById(messageId) != null) continue
@@ -925,7 +1124,6 @@ class ChatRepository @Inject constructor(
                             val mediaCloudUrl = doc.getString("mediaCloudUrl")
                             val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
 
-                            val senderUsername = doc.getString("senderUsername") ?: senderId
                             val displayPeer = if (senderUsername.isNotBlank()) senderUsername else senderId
 
                             var localSavedUri: String? = null
@@ -968,6 +1166,10 @@ class ChatRepository @Inject constructor(
                                 android.util.Log.e("ChatRepository", "Failed ensureChatExists in cloud listener: ${e.message}", e)
                             }
 
+                            val isCurrentChatOpen = (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == chatId)
+                            val isReadReceiptsOn = sessionManager.isReadReceiptsEnabled()
+                            val initialStatus = if (isCurrentChatOpen) "read" else "delivered"
+
                             val msg = MessageEntity(
                                 messageId = messageId,
                                 chatId = chatId,
@@ -979,7 +1181,7 @@ class ChatRepository @Inject constructor(
                                 mediaCloudUrl = mediaCloudUrl,
                                 mediaSizeBytes = mediaSizeBytes,
                                 mimeType = mimeType,
-                                deliveryStatus = "delivered",
+                                deliveryStatus = initialStatus,
                                 hopCount = 0,
                                 transportUsed = "cloud",
                                 timestamp = timestamp,
@@ -989,13 +1191,28 @@ class ChatRepository @Inject constructor(
                             )
                             try {
                                 messageDao.insertMessage(msg)
-                                chatDao.incrementUnread(chatId)
-                                notificationHelper.showNewMessageNotification(
-                                    chatId = chatId,
-                                    senderName = displayPeer,
-                                    content = previewText,
-                                    dataType = dataType
-                                )
+                                if (isCurrentChatOpen) {
+                                    chatDao.clearUnread(chatId)
+                                    val cloudStatus = if (isReadReceiptsOn) "read" else "delivered"
+                                    firestore.collection("chats")
+                                        .document(chatId)
+                                        .collection("messages")
+                                        .document(messageId)
+                                        .update("deliveryStatus", cloudStatus)
+                                } else {
+                                    chatDao.incrementUnread(chatId)
+                                    notificationHelper.showNewMessageNotification(
+                                        chatId = chatId,
+                                        senderName = displayPeer,
+                                        content = previewText,
+                                        dataType = dataType
+                                    )
+                                    firestore.collection("chats")
+                                        .document(chatId)
+                                        .collection("messages")
+                                        .document(messageId)
+                                        .update("deliveryStatus", "delivered")
+                                }
                             } catch (e: Exception) {
                                 android.util.Log.e("ChatRepository", "Failed to insert cloud message: ${e.message}", e)
                             }
@@ -1066,7 +1283,21 @@ class ChatRepository @Inject constructor(
                                     continue
                                 }
 
-                                if (senderId == currentUserId) continue
+                                val senderUsername = doc.getString("senderUsername") ?: senderId
+                                if (senderId == currentUserId || (currentUsername != null && senderUsername.equals(currentUsername, ignoreCase = true))) {
+                                    val cloudStatus = doc.getString("deliveryStatus")
+                                    if (cloudStatus == "read") {
+                                        messageDao.updateDeliveryStatus(messageId, "read")
+                                    } else if (cloudStatus == "delivered") {
+                                        val localMsg = messageDao.getMessageById(messageId)
+                                        if (localMsg != null && localMsg.deliveryStatus != "read") {
+                                            messageDao.updateDeliveryStatus(messageId, "delivered")
+                                        }
+                                    }
+                                    continue
+                                }
+
+                                if (sessionManager.isUserBlocked(senderUsername) || sessionManager.isUserBlocked(senderId)) continue
                                 if (messageDao.getMessageById(messageId) != null) continue
 
                                 val chatId = doc.getString("chatId") ?: continue
@@ -1076,7 +1307,6 @@ class ChatRepository @Inject constructor(
                                 val mediaSizeBytes = doc.getLong("mediaSizeBytes") ?: 0L
                                 val mediaCloudUrl = doc.getString("mediaCloudUrl")
                                 val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
-                                val senderUsername = doc.getString("senderUsername") ?: senderId
 
                                 var localSavedUri: String? = null
                                 if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:image")) {
@@ -1110,6 +1340,10 @@ class ChatRepository @Inject constructor(
 
                                 ensureChatExists(chatId, senderUsername, previewText, timestamp, "cloud")
 
+                                val isCurrentChatOpen = (com.phantom.mesh.util.NotificationHelper.currentActiveChatId == chatId)
+                                val isReadReceiptsOn = sessionManager.isReadReceiptsEnabled()
+                                val initialStatus = if (isCurrentChatOpen) "read" else "delivered"
+
                                 val msg = MessageEntity(
                                     messageId = messageId,
                                     chatId = chatId,
@@ -1121,7 +1355,7 @@ class ChatRepository @Inject constructor(
                                     mediaCloudUrl = mediaCloudUrl,
                                     mediaSizeBytes = mediaSizeBytes,
                                     mimeType = mimeType,
-                                    deliveryStatus = "delivered",
+                                    deliveryStatus = initialStatus,
                                     hopCount = 0,
                                     transportUsed = "cloud",
                                     timestamp = timestamp,
@@ -1130,13 +1364,28 @@ class ChatRepository @Inject constructor(
                                     replyToSender = doc.getString("replyToSender")
                                 )
                                 messageDao.insertMessage(msg)
-                                chatDao.incrementUnread(chatId)
-                                notificationHelper.showNewMessageNotification(
-                                    chatId = chatId,
-                                    senderName = senderUsername,
-                                    content = previewText,
-                                    dataType = dataType
-                                )
+                                if (isCurrentChatOpen) {
+                                    chatDao.clearUnread(chatId)
+                                    val cloudStatus = if (isReadReceiptsOn) "read" else "delivered"
+                                    firestore.collection("chats")
+                                        .document(chatId)
+                                        .collection("messages")
+                                        .document(messageId)
+                                        .update("deliveryStatus", cloudStatus)
+                                } else {
+                                    chatDao.incrementUnread(chatId)
+                                    notificationHelper.showNewMessageNotification(
+                                        chatId = chatId,
+                                        senderName = senderUsername,
+                                        content = previewText,
+                                        dataType = dataType
+                                    )
+                                    firestore.collection("chats")
+                                        .document(chatId)
+                                        .collection("messages")
+                                        .document(messageId)
+                                        .update("deliveryStatus", "delivered")
+                                }
                             }
                         } catch (e: Exception) {
                             android.util.Log.e("ChatRepository", "Polling error for chat ${chat.chatId}: ${e.message}")
@@ -1170,6 +1419,7 @@ class ChatRepository @Inject constructor(
             .trim()
             .ifBlank { "Encrypted Contact" }
 
+        val effectiveTimestamp = if (timestamp > 0L) timestamp else System.currentTimeMillis()
         val existing = chatDao.getChatById(chatId)
         if (existing == null) {
             val newChat = ChatEntity(
@@ -1177,12 +1427,13 @@ class ChatRepository @Inject constructor(
                 participants = targetUserId,
                 chatTitle = cleanTitle,
                 lastMessagePreview = preview,
-                lastMessageTimestamp = timestamp,
+                lastMessageTimestamp = effectiveTimestamp,
                 unreadCount = 0,
                 transportType = transport
             )
             chatDao.insertChat(newChat)
         } else {
+            val bestTimestamp = maxOf(existing.lastMessageTimestamp, effectiveTimestamp)
             // Clean up existing titles that had "Peer " prefix
             if (existing.chatTitle?.startsWith("Peer ") == true ||
                 existing.chatTitle?.startsWith("Peer-") == true ||
@@ -1191,12 +1442,12 @@ class ChatRepository @Inject constructor(
                 val updatedChat = existing.copy(
                     chatTitle = cleanTitle,
                     lastMessagePreview = preview,
-                    lastMessageTimestamp = timestamp,
+                    lastMessageTimestamp = bestTimestamp,
                     transportType = transport
                 )
                 chatDao.updateChat(updatedChat)
             } else {
-                chatDao.updateLastMessage(chatId, preview, timestamp, transport)
+                chatDao.updateLastMessage(chatId, preview, bestTimestamp, transport)
             }
         }
     }

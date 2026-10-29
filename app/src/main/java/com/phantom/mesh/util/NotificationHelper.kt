@@ -13,9 +13,13 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.phantom.mesh.R
+import com.phantom.mesh.data.local.dao.ChatDao
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.ui.MainActivity
+import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,7 +27,8 @@ import javax.inject.Singleton
 class NotificationHelper @Inject constructor(
     @ApplicationContext private val context: Context,
     private val sessionManager: SessionManager,
-    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager
+    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager,
+    private val chatDao: Lazy<ChatDao>
 ) {
     companion object {
         const val CHANNEL_ID = "phantom_messages_channel"
@@ -92,6 +97,28 @@ class NotificationHelper @Inject constructor(
     ) {
         // Do not notify if in duress mode (anti-surveillance stealth)
         if (sessionManager.isDuress()) {
+            return
+        }
+
+        // Feature 4: DND mode active -> suppress notification
+        if (sessionManager.isDndEnabled()) {
+            return
+        }
+
+        // Feature 3: Blocked contact -> suppress notification
+        if (sessionManager.isUserBlocked(senderName) || sessionManager.isUserBlocked(chatId)) {
+            return
+        }
+
+        // Feature 5: Muted chat -> suppress notification
+        val isMuted = try {
+            runBlocking(Dispatchers.IO) {
+                chatDao.get().isChatMuted(chatId) == true
+            }
+        } catch (_: Exception) {
+            false
+        }
+        if (isMuted) {
             return
         }
 
@@ -180,6 +207,8 @@ class NotificationHelper @Inject constructor(
         callType: String
     ) {
         if (sessionManager.isDuress()) return
+        if (sessionManager.isDndEnabled()) return
+        if (sessionManager.isUserBlocked(callerUsername)) return
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val hasPermission = ContextCompat.checkSelfPermission(

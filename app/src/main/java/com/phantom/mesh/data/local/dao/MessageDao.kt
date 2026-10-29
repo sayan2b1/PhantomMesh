@@ -85,20 +85,56 @@ interface MessageDao {
         UPDATE messages 
         SET delivery_status = 'read' 
         WHERE chat_id = :chatId 
+          AND (sender_id != :currentUserId AND sender_id != :currentUsername)
+          AND delivery_status != 'read'
+    """)
+    suspend fun markIncomingMessagesAsRead(chatId: String, currentUserId: String, currentUsername: String)
+
+    /** Backward-compatible overload */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'read' 
+        WHERE chat_id = :chatId 
           AND sender_id != :currentUserId 
           AND delivery_status != 'read'
     """)
     suspend fun markIncomingMessagesAsRead(chatId: String, currentUserId: String)
 
+    /** Mark all sent messages in a chat as read (by chatId) */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'read' 
+        WHERE chat_id = :chatId 
+          AND (sender_id = :myUserId OR sender_id = :myUsername OR target_id != :myUserId)
+          AND delivery_status != 'read'
+    """)
+    suspend fun markSentMessagesAsReadByChat(chatId: String, myUserId: String, myUsername: String)
+
+    /** Mark all sent messages as delivered in a chat */
+    @Query("""
+        UPDATE messages 
+        SET delivery_status = 'delivered' 
+        WHERE chat_id = :chatId 
+          AND (sender_id = :myUserId OR sender_id = :myUsername OR target_id != :myUserId)
+          AND delivery_status IN ('saved', 'mesh_sent')
+    """)
+    suspend fun markSentMessagesAsDeliveredByChat(chatId: String, myUserId: String, myUsername: String)
+
     /** Mark all sent messages to a peer as read when peer sends read receipt ACK */
     @Query("""
         UPDATE messages 
         SET delivery_status = 'read' 
-        WHERE sender_id = :myUserId 
-          AND target_id = :peerId 
+        WHERE (sender_id = :myUserId OR sender_id = :myUsername)
+          AND (target_id = :peerId OR target_id = :peerUsername OR chat_id = :chatId)
           AND delivery_status != 'read'
     """)
-    suspend fun markChatMessagesAsReadByPeer(myUserId: String, peerId: String)
+    suspend fun markChatMessagesAsReadByPeer(
+        myUserId: String,
+        peerId: String,
+        myUsername: String = "",
+        peerUsername: String = "",
+        chatId: String = ""
+    )
 
     @Query("DELETE FROM messages WHERE chat_id = :chatId")
     suspend fun deleteMessagesForChat(chatId: String)

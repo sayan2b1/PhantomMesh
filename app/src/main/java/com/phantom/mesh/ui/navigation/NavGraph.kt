@@ -13,6 +13,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.phantom.mesh.ui.auth.AuthScreen
 import com.phantom.mesh.ui.auth.AuthViewModel
+import com.phantom.mesh.ui.calling.CallHistoryScreen
+import com.phantom.mesh.ui.calling.CallHistoryViewModel
 import com.phantom.mesh.ui.chat.ChatListScreen
 import com.phantom.mesh.ui.chat.ChatListViewModel
 import com.phantom.mesh.ui.chat.ChatScreen
@@ -31,6 +33,7 @@ object Destinations {
     const val TOPOLOGY = "topology"
     const val DROP_ZONE = "drop_zone"
     const val SETTINGS = "settings"
+    const val CALL_HISTORY = "call_history"
 
     fun chatRoute(chatId: String, targetId: String) = "chat/$chatId/$targetId"
 }
@@ -93,6 +96,9 @@ fun PhantomNavGraph(
                 onNavigateDropZone = {
                     navController.navigate(Destinations.DROP_ZONE)
                 },
+                onNavigateCallHistory = {
+                    navController.navigate(Destinations.CALL_HISTORY)
+                },
                 onNavigateSettings = {
                     navController.navigate(Destinations.SETTINGS)
                 }
@@ -134,6 +140,14 @@ fun PhantomNavGraph(
         composable(Destinations.DROP_ZONE) {
             val viewModel: DropZoneViewModel = hiltViewModel()
             DropZoneScreen(
+                viewModel = viewModel,
+                onBackClick = { navController.popBackStack() }
+            )
+        }
+
+        composable(Destinations.CALL_HISTORY) {
+            val viewModel: CallHistoryViewModel = hiltViewModel()
+            CallHistoryScreen(
                 viewModel = viewModel,
                 onBackClick = { navController.popBackStack() }
             )

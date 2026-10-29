@@ -22,7 +22,8 @@ class SettingsViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val duressWipeManager: DuressWipeManager,
     private val sessionManager: SessionManager,
-    private val localChatBackupManager: LocalChatBackupManager
+    private val localChatBackupManager: LocalChatBackupManager,
+    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager
 ) : ViewModel() {
 
     val username: StateFlow<String?> = sessionManager.usernameFlow
@@ -88,6 +89,24 @@ class SettingsViewModel @Inject constructor(
 
     val preferredRefreshRate: StateFlow<Int> = sessionManager.preferredRefreshRateFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getPreferredRefreshRate())
+
+    val blockedUsers: StateFlow<Set<String>> = sessionManager.blockedUsersFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getBlockedUsers())
+
+    val isDndEnabled: StateFlow<Boolean> = sessionManager.dndEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.isDndEnabled())
+
+    fun setDndEnabled(enabled: Boolean) {
+        sessionManager.setDndEnabled(enabled)
+    }
+
+    fun unblockUser(usernameOrId: String) {
+        sessionManager.unblockUser(usernameOrId)
+    }
+
+    fun getFormattedDisplayName(usernameOrId: String): String {
+        return contactAliasManager.getFormattedDisplayName(usernameOrId)
+    }
 
     init {
         refreshAvailableBackups()

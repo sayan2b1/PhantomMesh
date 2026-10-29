@@ -3,6 +3,7 @@ package com.phantom.mesh.di
 import android.content.Context
 import androidx.room.Room
 import com.phantom.mesh.data.local.PhantomMeshDatabase
+import com.phantom.mesh.data.local.dao.CallLogDao
 import com.phantom.mesh.data.local.dao.ChatDao
 import com.phantom.mesh.data.local.dao.DropZoneDao
 import com.phantom.mesh.data.local.dao.MeshQueueDao
@@ -42,6 +43,30 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            try {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS call_logs (
+                        call_id TEXT NOT NULL PRIMARY KEY,
+                        peer_username TEXT NOT NULL,
+                        peer_address TEXT NOT NULL,
+                        call_type TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        duration_seconds INTEGER NOT NULL,
+                        status TEXT NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_call_logs_timestamp ON call_logs (timestamp)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_call_logs_peer_username ON call_logs (peer_username)")
+            } catch (_: Throwable) {}
+            try {
+                db.execSQL("ALTER TABLE chats ADD COLUMN is_muted INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Throwable) {}
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): PhantomMeshDatabase {
@@ -50,7 +75,7 @@ object DatabaseModule {
             PhantomMeshDatabase::class.java,
             PhantomMeshDatabase.DATABASE_NAME
         )
-            .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -69,4 +94,7 @@ object DatabaseModule {
 
     @Provides
     fun provideMeshQueueDao(db: PhantomMeshDatabase): MeshQueueDao = db.meshQueueDao()
+
+    @Provides
+    fun provideCallLogDao(db: PhantomMeshDatabase): CallLogDao = db.callLogDao()
 }

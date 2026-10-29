@@ -50,6 +50,9 @@ data class ChatEntity(
     @ColumnInfo(name = "is_archived")
     val isArchived: Boolean = false,
 
+    @ColumnInfo(name = "is_muted")
+    val isMuted: Boolean = false,
+
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis()
 )
