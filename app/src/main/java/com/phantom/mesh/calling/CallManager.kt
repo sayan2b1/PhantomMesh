@@ -124,6 +124,7 @@ class CallManager @Inject constructor(
     private var lanVoipEngine: LanVoipEngine? = null
 
     private var durationTimerJob: Job? = null
+    private var outgoingRingTimeoutJob: Job? = null
     private var audioVoipEngine: AudioVoipEngine? = null
 
     private val incomingCallListeners = mutableListOf<ListenerRegistration>()
@@ -397,6 +398,17 @@ class CallManager @Inject constructor(
             Log.w(TAG, "Mesh signaling offer failed: ${e.message}")
         }
 
+        // Auto-timeout after 45s if peer does not answer
+        outgoingRingTimeoutJob?.cancel()
+        outgoingRingTimeoutJob = scope.launch {
+            delay(45_000L)
+            val current = _currentCall.value
+            if (current != null && current.callId == callId && current.status == CallStatus.OUTGOING_CALLING) {
+                Log.i(TAG, "Outgoing call timed out after 45s without answer")
+                endCallWithReason("NOT_ANSWERED")
+            }
+        }
+
         return CallInitiationResult.Success(call)
     }
 
@@ -554,6 +566,8 @@ class CallManager @Inject constructor(
         Log.i(TAG, "Connecting call $mode. isSameWifi=$isSameWifi, myNet=$myNetworkProfile, peerNet=$peerNet")
 
         val now = System.currentTimeMillis()
+        outgoingRingTimeoutJob?.cancel()
+        outgoingRingTimeoutJob = null
         _currentCall.value = _currentCall.value?.copy(
             status = CallStatus.CONNECTED,
             startTimeMs = now,
@@ -1016,11 +1030,29 @@ class CallManager @Inject constructor(
      */
     fun endCall(notifyRemote: Boolean = true) {
         val call = _currentCall.value
+        val defaultReason = when {
+            call == null -> "CANCELLED"
+            call.status == CallStatus.INCOMING_RINGING -> "DECLINED"
+            call.durationSeconds > 0 -> "COMPLETED"
+            call.status == CallStatus.OUTGOING_CALLING -> "NOT_ANSWERED"
+            else -> "CANCELLED"
+        }
+        endCallWithReason(defaultReason, notifyRemote)
+    }
+
+    fun endCallWithReason(reason: String, notifyRemote: Boolean = true) {
+        val call = _currentCall.value
         durationTimerJob?.cancel()
         durationTimerJob = null
+        outgoingRingTimeoutJob?.cancel()
+        outgoingRingTimeoutJob = null
 
         if (call != null) {
-            val status = if (call.status == CallStatus.INCOMING_RINGING) "REJECTED" else if (call.durationSeconds > 0) "COMPLETED" else "CANCELLED"
+            val status = when {
+                call.status == CallStatus.INCOMING_RINGING -> "DECLINED"
+                call.durationSeconds > 0 -> "COMPLETED"
+                else -> reason
+            }
             saveCallLogInDb(call, status)
         }
 
@@ -1122,9 +1154,18 @@ class CallManager @Inject constructor(
         val call = _currentCall.value
         durationTimerJob?.cancel()
         durationTimerJob = null
+        outgoingRingTimeoutJob?.cancel()
+        outgoingRingTimeoutJob = null
 
         if (call != null) {
-            val status = if (call.status == CallStatus.INCOMING_RINGING) "MISSED" else if (call.durationSeconds > 0) "COMPLETED" else reason
+            val status = when {
+                call.status == CallStatus.INCOMING_RINGING -> "MISSED"
+                call.durationSeconds > 0 -> "COMPLETED"
+                reason.equals("Call Declined", ignoreCase = true) || reason.equals("REJECTED", ignoreCase = true) -> "DECLINED"
+                reason.equals("Caller Cancelled", ignoreCase = true) -> if (call.isIncoming) "MISSED" else "NOT_ANSWERED"
+                reason.equals("NOT_CONNECTED", ignoreCase = true) || reason.equals("FAILED", ignoreCase = true) -> "NOT_CONNECTED"
+                else -> reason
+            }
             saveCallLogInDb(call, status)
         }
 
@@ -1200,17 +1241,31 @@ class CallManager @Inject constructor(
             try {
                 val durSecondsInt = (finalDuration?.toLong() ?: call.durationSeconds).toInt()
                 val isOutgoing = !call.isIncoming
+                val normalizedStatus = when {
+                    durSecondsInt > 0 -> "COMPLETED"
+                    status.equals("Call Declined", ignoreCase = true) ||
+                    status.equals("REJECTED", ignoreCase = true) ||
+                    status.equals("DECLINED", ignoreCase = true) -> "DECLINED"
+                    status.equals("MISSED", ignoreCase = true) -> "MISSED"
+                    status.equals("NOT_CONNECTED", ignoreCase = true) ||
+                    status.equals("FAILED", ignoreCase = true) ||
+                    status.equals("Unreachable", ignoreCase = true) -> "NOT_CONNECTED"
+                    status.equals("NOT_ANSWERED", ignoreCase = true) ||
+                    status.equals("CANCELLED", ignoreCase = true) ||
+                    status.equals("Caller Cancelled", ignoreCase = true) -> {
+                        if (isOutgoing) "NOT_ANSWERED" else "MISSED"
+                    }
+                    status.isNotBlank() -> status
+                    isOutgoing -> "NOT_ANSWERED"
+                    else -> "MISSED"
+                }
+
                 val direction = when {
                     isOutgoing -> "OUTGOING"
-                    durSecondsInt > 0 || call.status == CallStatus.CONNECTED -> "INCOMING"
-                    else -> "MISSED"
+                    normalizedStatus == "MISSED" -> "MISSED"
+                    else -> "INCOMING"
                 }
-                val logStatus = when {
-                    durSecondsInt > 0 -> "COMPLETED"
-                    status.isNotBlank() -> status
-                    isOutgoing -> "CANCELLED"
-                    else -> "MISSED"
-                }
+
                 callLogDao.insertCallLog(
                     CallLogEntity(
                         callId = call.callId,
@@ -1220,7 +1275,7 @@ class CallManager @Inject constructor(
                         direction = direction,
                         timestamp = System.currentTimeMillis(),
                         durationSeconds = durSecondsInt,
-                        status = logStatus
+                        status = normalizedStatus
                     )
                 )
             } catch (e: Exception) {
