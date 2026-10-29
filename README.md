@@ -3,7 +3,7 @@
 > **Decentralized, Off-Grid Mesh & Hybrid Cloud Messenger for Android**
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
-[![Version](https://img.shields.io/badge/Version-v2.2.1-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
+[![Version](https://img.shields.io/badge/Version-v2.5.0-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
 [![Language](https://img.shields.io/badge/Language-Kotlin-blue.svg)](https://kotlinlang.org/)
 [![UI](https://img.shields.io/badge/UI-Jetpack%20Compose-purple.svg)](https://developer.android.com/jetpack/compose)
 [![Mesh Engine](https://img.shields.io/badge/Engine-Nearby%20Connections%20P2P-cyan.svg)](https://developers.google.com/nearby/connections/overview)
@@ -22,10 +22,23 @@
 - **Dynamic Routing Table**: Automatic peer identity discovery, reachability advertisements, and 1-to-1 routing fallbacks.
 - **Priority Data Queue**: Text and control packets (ACK, identity, deletion) transmit instantly, while high-volume media payloads queue for high-bandwidth links.
 
-### 📞 VoIP Voice & Video Calling Engine
-- **Voice Calling Across All Networks**: Low-bandwidth VoIP voice calling is fully operational across **all networks (Bluetooth Mesh, Wi-Fi Direct, and Cloud)** without requiring cellular towers or internet.
-- **Video Calling**: High-throughput video streaming authorized over **Wi-Fi Direct and Cloud** connections with intelligent transport bandwidth gating.
+### 📞 Pure-Kotlin VoIP Voice & Video Calling Engine
+- **Voice Calling Across All Transports**: Low-bandwidth VoIP voice calling is fully operational across **all networks (Bluetooth Mesh, Wi-Fi Direct LAN P2P, and Cloud Relay)** without requiring cellular towers or internet.
+- **Pure-Kotlin Video Pipeline**: Utilizes custom `CameraVideoEngine` with main-thread frame sampling and background compression, eliminating native WebRTC C++ surface collisions and SIGSEGV/SIGABRT crashes on modern Android devices (Android 14+, Samsung Galaxy F34, OnePlus 11R).
+- **Sub-5ms Local Wi-Fi LAN Mode**: Direct UDP peer-to-peer audio and video transmission when connected to the same Wi-Fi network.
+- **45-Second Outgoing Call Timeout**: Automated call ring timeout transitions unanswered outgoing calls cleanly without hanging indefinitely.
 - **In-Call Overlay & Controls**: Full-screen calling UI with animated audio wave pulses, speakerphone toggle, microphone mute, camera flipper, and active call duration timer.
+
+### 📊 Dedicated Call History Hub & Analytics
+- **Detailed Call Metrics**:
+  - **Time of Calling**: Clean timestamps with clock icons (`Today, 10:45 AM`, `Yesterday, 04:20 PM`, or `Oct 29, 09:15 AM`).
+  - **Call Duration**: Formatted in monospace (`2m 45s`, `45s`, `1h 12m 30s`) for all completed calls.
+  - **Incoming / Outgoing Direction**: Visual directional arrows and labels (`Incoming` in green, `Outgoing` in cyan).
+  - **Granular Status Badges**: Specific color-coded badges for **Completed**, **Missed Call** (Crimson), **Call Declined** (Amber), **Not Answered** (Warm Amber), and **Not Connected** (Red).
+  - **Call Type Identification**: Visual chips indicating **`[AUDIO]`** (green) or **`[VIDEO]`** (cyan) with matching avatar icons.
+- **Interactive Filter Tabs**: Filter call records instantly between **ALL** and **MISSED / UNANSWERED**.
+- **One-Tap Quick Callback**: Direct audio or video redial buttons on every call record.
+- **Call Management**: Delete individual call logs or clear full call history with confirmation dialogs.
 
 ### 💬 Swipe-to-Reply & Quoted Context
 - **Fluid Gesture Control**: Swipe right on any message bubble with a smooth spring animation and haptic vibration feedback.
@@ -60,16 +73,32 @@
 - **Dual Display Everywhere**: Both custom alias and network username appear together across chat headers, conversation lists, nearby peer chips, and push notifications.
 - **Live Edit**: Tap on the contact name inside the chat or long-press any conversation in the chat list to update or reset custom aliases with live previews.
 
-### 🛡️ Privacy & Read Receipts Control
-- **Read Receipts On/Off**: Toggle double blue checkmarks on/off under *Settings ➔ Privacy & Security*.
-- **Private Mode**: When disabled, sent and received messages retain neutral gray checkmarks (`CheckGray`) without revealing read status to peers.
-- **3-Tier Delivery Tracking**: 1 gray tick (saved/sent), 2 gray ticks (delivered to peer device), 2 blue ticks (read by peer).
+### 🛡️ Synchronized 3-Tier Delivery & Read Receipts
+- **Accurate 3-State Delivery Tracking**:
+  - **1 Gray Check**: Stored in local database and dispatched (`saved` / `mesh_sent`).
+  - **2 Gray Checks**: Delivered to recipient device and local notification generated (`delivered`).
+  - **2 Bright Cyan Checks**: Recipient opened the chat and read the message (`read`).
+- **Clock-Skew Tolerant Synchronization**: Timestamp-bounded database queries (`markSentMessagesAsReadBefore`, `markSentMessagesAsDeliveredBefore`) prevent newly sent messages from prematurely turning blue.
+- **Dual-Channel Delivery Sync**: Automatically bridges delivery receipts across both Bluetooth/Wi-Fi Direct mesh ACKs and Firestore cloud listeners.
+- **Read Receipts Toggle**: Opt-in/out of read receipts under *Settings ➔ Privacy & Security*. When disabled, checkmarks remain neutral gray.
 
-### 💬 Unread Message Counters & In-Chat Dividers
+### 🧹 Chat & Contact Management
+- **Clear Chat**: Clear conversation message history for any contact directly from the in-chat dropdown menu.
+- **Delete Contact / Conversation**: Remove any chat directly from the home screen / conversation list.
+- **Chronological Sorting**: Conversations automatically sort in real-time with the most recent message anchored at the very top.
+- **Archive & Mute**: Archive low-priority chats or mute notifications on a per-contact basis.
+
+### 🚫 Contact Blocking & Do Not Disturb (DND) Suite
+- **One-Tap Contact Blocking**: Block unwanted contacts directly from the chat screen menu. Incoming messages and call offers from blocked users are silently discarded.
+- **Blocked Contacts Manager**: View total blocked count under *Settings ➔ Privacy & Security* with individual **UNBLOCK** action pills.
+- **Do Not Disturb (DND) Mode**: Global toggle silences all message popups, call ringtones, and notification sounds while keeping messages quietly recorded.
+
+### 💬 Unread Message Counters, Dividers & Real-Time Auto-Scroll
 - **Conversation List Badges**: High-contrast unread count badges highlight chats with unread messages.
 - **In-Chat Unread Divider**: A dedicated banner (`——— ● N UNREAD MESSAGES ———`) clearly separates previously read messages from new ones.
 - **`NEW` Badges & Glowing Accents**: Unread message bubbles feature a distinct `NEW` tag and subtle neon accent borders.
-- **Smart Auto-Scroll**: Opening a conversation automatically scrolls to the first unread message.
+- **Real-Time Chat Auto-Scroll**: Opening a conversation anchors to the latest message at the bottom. When chatting, new incoming and outgoing messages smoothly scroll into view with physics animations.
+- **Dynamic Keyboard (IME) Pinning**: Automatically keeps the latest messages visible immediately above the keyboard when typing.
 
 ### 💾 Signal-Style Encrypted Local Chat Backup & Restore
 - **In-Place Append & Rewrite**: Backs up entire message history and chats into a single encrypted file (`phantom_mesh_backup_latest.enc`) without creating duplicate files or cluttering storage.
@@ -175,8 +204,8 @@ PhantomMesh requires the following system permissions to operate the hybrid mesh
 ### Prerequisites
 - **Android Studio**: Ladybug (2024.2.1) or newer
 - **JDK**: Java 17
-- **Min SDK**: API 26 (Android 8.0 Oreo)
-- **Target SDK**: API 34 (Android 14)
+- **Min SDK**: API 31 (Android 12)
+- **Target SDK**: API 35 (Android 15)
 
 ### Clone the Repository
 ```bash
