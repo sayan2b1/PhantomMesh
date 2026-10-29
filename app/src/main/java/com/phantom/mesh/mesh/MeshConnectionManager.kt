@@ -680,6 +680,27 @@ class MeshConnectionManager @Inject constructor(
                             }
                         }
                     }
+                    "edit_msg" -> {
+                        // Remote message edit request received via mesh
+                        _incomingPackets.emit(packet)
+                        if (cleanTarget != "broadcast") {
+                            val ack = packet.createAck()
+                            routeAndSend(ack)
+                        }
+                        if (!packet.isExpired()) {
+                            val otherEndpoints = routingTable.getAllConnectedEndpoints().filter { it != fromEndpointId }
+                            if (otherEndpoints.isNotEmpty()) {
+                                val forwardPacket = packet.incrementHop()
+                                for (ep in otherEndpoints) {
+                                    sendToEndpoint(ep, forwardPacket)
+                                }
+                            }
+                        }
+                    }
+                    "typing_status" -> {
+                        // Ephemeral typing and voice recording indicator — emit without sending ACK
+                        _incomingPackets.emit(packet)
+                    }
                     else -> {
                         // Regular message — emit for local processing
                         _incomingPackets.emit(packet)

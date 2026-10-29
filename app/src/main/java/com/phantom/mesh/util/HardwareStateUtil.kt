@@ -6,6 +6,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.location.LocationManager
 import android.os.Build
 import android.os.Environment
@@ -109,6 +112,58 @@ object HardwareStateUtil {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(intent)
+        }
+    }
+
+    /**
+     * Downsamples and compresses an image file to a maximum dimension of 1280px and JPEG quality 80,
+     * preserving correct EXIF orientation. Returns the compressed File.
+     */
+    fun optimizeImage(sourceFile: File, outputFile: File): File {
+        return try {
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(sourceFile.absolutePath, boundsOptions)
+
+            var inSampleSize = 1
+            val maxDim = 1280
+            while (boundsOptions.outWidth / inSampleSize > maxDim || boundsOptions.outHeight / inSampleSize > maxDim) {
+                inSampleSize *= 2
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = inSampleSize
+            }
+            var bmp = BitmapFactory.decodeFile(sourceFile.absolutePath, decodeOptions) ?: return sourceFile
+
+            // Check EXIF orientation
+            try {
+                val exif = ExifInterface(sourceFile.absolutePath)
+                val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                val rotationDegrees = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+                if (rotationDegrees != 0f) {
+                    val matrix = Matrix().apply { postRotate(rotationDegrees) }
+                    val rotatedBmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                    bmp.recycle()
+                    bmp = rotatedBmp
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("HardwareStateUtil", "EXIF read error: ${e.message}")
+            }
+
+            outputFile.parentFile?.mkdirs()
+            FileOutputStream(outputFile).use { fos ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 80, fos)
+            }
+            bmp.recycle()
+            outputFile
+        } catch (e: Exception) {
+            android.util.Log.e("HardwareStateUtil", "Error optimizing image: ${e.message}", e)
+            sourceFile
         }
     }
 

@@ -53,6 +53,10 @@ data class ChatEntity(
     @ColumnInfo(name = "is_muted")
     val isMuted: Boolean = false,
 
+    /** Unsent draft message text (WhatsApp-style) */
+    @ColumnInfo(name = "draft_message")
+    val draftMessage: String? = null,
+
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis()
 )

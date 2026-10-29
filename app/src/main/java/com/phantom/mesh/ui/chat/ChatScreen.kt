@@ -1,6 +1,8 @@
 package com.phantom.mesh.ui.chat
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.os.Build
 import android.graphics.Bitmap
@@ -24,10 +26,13 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.draw.scale
@@ -71,18 +76,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContactPhone
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Reply
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
@@ -179,10 +189,21 @@ fun ChatScreen(
     val blockedUsers by viewModel.blockedUsers.collectAsState()
 
     var inputMessage by remember { mutableStateOf("") }
+    var draftLoaded by remember { mutableStateOf(false) }
+    val initialDraft by viewModel.draftMessage.collectAsState()
+    LaunchedEffect(initialDraft) {
+        if (!draftLoaded && !initialDraft.isNullOrBlank()) {
+            inputMessage = initialDraft ?: ""
+            draftLoaded = true
+        }
+    }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var selectedMessageForDelete by remember { mutableStateOf<MessageEntity?>(null) }
+    var messageToEdit by remember { mutableStateOf<MessageEntity?>(null) }
+    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+    var showMessageNotFoundDialog by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var showAudioPickerSheet by remember { mutableStateOf(false) }
@@ -210,6 +231,7 @@ fun ChatScreen(
 
     val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsState()
     val unreadMessageIds by viewModel.unreadMessageIds.collectAsState()
+    val peerTypingState by viewModel.peerTypingState.collectAsState()
     val senderBubbleColorHex by viewModel.senderBubbleColor.collectAsState()
     val receiverBubbleColorHex by viewModel.receiverBubbleColor.collectAsState()
     val chatFontStyle by viewModel.chatFontStyle.collectAsState()
@@ -249,7 +271,7 @@ fun ChatScreen(
         }
     }
 
-    val voicePlayerManager = remember { VoicePlayerManager() }
+    val voicePlayerManager = remember { VoicePlayerManager }
     DisposableEffect(Unit) {
         onDispose {
             voicePlayerManager.stop()
@@ -296,6 +318,68 @@ fun ChatScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: android.net.Uri? ->
         uri?.let { viewModel.sendUriAttachment(context, it) }
+    }
+
+    // Quick camera capture for instant photo sending in typing area
+    var cameraTempFile by remember { mutableStateOf<File?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            val file = cameraTempFile
+            if (file != null && file.exists() && file.length() > 0) {
+                val optFile = File(context.cacheDir, "cam_opt_${System.currentTimeMillis()}.jpg")
+                val optimizedFile = com.phantom.mesh.util.HardwareStateUtil.optimizeImage(file, optFile)
+                viewModel.sendMedia(optimizedFile, "image/jpeg", "image")
+            }
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            try {
+                val photoDir = File(context.cacheDir, "camera_photos").apply { mkdirs() }
+                val photoFile = File(photoDir, "cam_${System.currentTimeMillis()}.jpg")
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    photoFile
+                )
+                cameraTempFile = photoFile
+                cameraLauncher.launch(uri)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Could not open camera: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Camera permission required to take quick photos", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val onLaunchQuickCamera: () -> Unit = {
+        val hasCamPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasCamPermission) {
+            try {
+                val photoDir = File(context.cacheDir, "camera_photos").apply { mkdirs() }
+                val photoFile = File(photoDir, "cam_${System.currentTimeMillis()}.jpg")
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    photoFile
+                )
+                cameraTempFile = photoFile
+                cameraLauncher.launch(uri)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Could not open camera: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     // Audio permission check for WhatsApp-like audio picker
@@ -703,6 +787,63 @@ fun ChatScreen(
                     }
                 }
 
+                val onNavigateToQuotedMessage: (String?, String?) -> Unit = { targetMessageId, targetSnippet ->
+                    val targetIndex = if (!targetMessageId.isNullOrBlank()) {
+                        messages.indexOfFirst { it.messageId == targetMessageId }
+                    } else if (!targetSnippet.isNullOrBlank()) {
+                        messages.indexOfFirst {
+                            it.content == targetSnippet ||
+                            (it.content != null && it.content.startsWith(targetSnippet.take(25)))
+                        }
+                    } else {
+                        -1
+                    }
+
+                    if (targetIndex != -1) {
+                        val foundMsg = messages[targetIndex]
+                        val lazyItemIndex = if (peerTypingState != com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE) {
+                            targetIndex + 1
+                        } else {
+                            targetIndex
+                        }
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(lazyItemIndex)
+                            highlightedMessageId = foundMsg.messageId
+                            kotlinx.coroutines.delay(1800)
+                            if (highlightedMessageId == foundMsg.messageId) {
+                                highlightedMessageId = null
+                            }
+                        }
+                    } else {
+                        coroutineScope.launch {
+                            val dbMsg = if (!targetMessageId.isNullOrBlank()) {
+                                viewModel.getMessageById(targetMessageId)
+                            } else null
+
+                            if (dbMsg != null) {
+                                val dbIndex = messages.indexOfFirst { it.messageId == dbMsg.messageId }
+                                if (dbIndex != -1) {
+                                    val lazyItemIndex = if (peerTypingState != com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE) {
+                                        dbIndex + 1
+                                    } else {
+                                        dbIndex
+                                    }
+                                    listState.animateScrollToItem(lazyItemIndex)
+                                    highlightedMessageId = dbMsg.messageId
+                                    kotlinx.coroutines.delay(1800)
+                                    if (highlightedMessageId == dbMsg.messageId) {
+                                        highlightedMessageId = null
+                                    }
+                                } else {
+                                    showMessageNotFoundDialog = true
+                                }
+                            } else {
+                                showMessageNotFoundDialog = true
+                            }
+                        }
+                    }
+                }
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -711,6 +852,59 @@ fun ChatScreen(
                         .padding(horizontal = 16.dp),
                     reverseLayout = true // Chat style: latest messages at the bottom
                 ) {
+                    if (peerTypingState != com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE) {
+                        item(key = "peer_typing_bubble") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp),
+                                horizontalArrangement = Arrangement.Start
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(DarkCard)
+                                        .border(
+                                            1.dp,
+                                            if (peerTypingState == com.phantom.mesh.util.TypingStatusManager.TypingState.RECORDING)
+                                                Color(0xFFFF9800).copy(alpha = 0.5f)
+                                            else NeonCyan.copy(alpha = 0.5f),
+                                            RoundedCornerShape(16.dp)
+                                        )
+                                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                                ) {
+                                    if (peerTypingState == com.phantom.mesh.util.TypingStatusManager.TypingState.RECORDING) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Mic,
+                                                contentDescription = null,
+                                                tint = Color(0xFFFF9800),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "$formattedTargetName is recording audio...",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFFFF9800),
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    } else {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "$formattedTargetName is typing",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = NeonCyan,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            AnimatedTypingDots(color = NeonCyan)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     itemsIndexed(messages, key = { _, message -> message.messageId }) { index, message ->
                         val isMe = message.senderId == currentUserId || 
                                    (currentUsername != null && message.senderId.equals(currentUsername, ignoreCase = true))
@@ -729,6 +923,7 @@ fun ChatScreen(
                                 message = message,
                                 isMe = isMe,
                                 isUnread = isUnread,
+                                isHighlighted = (message.messageId == highlightedMessageId),
                                 voicePlayerManager = voicePlayerManager,
                                 senderBubbleColor = senderBubbleColor,
                                 receiverBubbleColor = receiverBubbleColor,
@@ -736,6 +931,7 @@ fun ChatScreen(
                                 fontSize = chatFontSize,
                                 readReceiptsEnabled = readReceiptsEnabled,
                                 onReply = { msg -> viewModel.setReplyingTo(msg) },
+                                onQuotedClick = onNavigateToQuotedMessage,
                                 onLongClick = {
                                     if (message.content != "🚫 This message was deleted" && message.dataType != "deleted") {
                                         selectedMessageForDelete = message
@@ -808,14 +1004,23 @@ fun ChatScreen(
 
                 ChatInputBar(
                     text = inputMessage,
-                    onTextChange = { inputMessage = it },
+                    onTextChange = { newText ->
+                        inputMessage = newText
+                        viewModel.onUserTyping(newText)
+                        if (newText.isBlank()) {
+                            viewModel.saveDraft("")
+                        }
+                    },
                     onAttachClick = {
                         showAttachmentSheet = true
                     },
+                    onCameraClick = onLaunchQuickCamera,
                     onSend = {
                         if (inputMessage.isNotBlank()) {
-                            viewModel.sendMessage(inputMessage)
+                            val textToSend = inputMessage
                             inputMessage = ""
+                            viewModel.saveDraft("")
+                            viewModel.sendMessage(textToSend)
                             coroutineScope.launch {
                                 listState.animateScrollToItem(0)
                             }
@@ -823,6 +1028,12 @@ fun ChatScreen(
                     },
                     onSendVoiceMessage = { file, durationMs ->
                         viewModel.sendVoiceMessage(file, durationMs)
+                    },
+                    onVoiceRecordingStarted = {
+                        viewModel.onVoiceRecordingStarted()
+                    },
+                    onVoiceRecordingStopped = {
+                        viewModel.onVoiceRecordingStopped()
                     }
                 )
             }
@@ -1135,71 +1346,257 @@ fun ChatScreen(
         )
     }
 
-    // Delete message dialog (WhatsApp style)
+    // Message options dialog (WhatsApp style)
     if (selectedMessageForDelete != null) {
         val targetMsg = selectedMessageForDelete!!
         val isSender = targetMsg.senderId == currentUserId ||
                 (currentUsername != null && targetMsg.senderId.equals(currentUsername, ignoreCase = true))
+        val isDeleted = targetMsg.content == "🚫 This message was deleted" || targetMsg.dataType == "deleted"
+        val elapsed = System.currentTimeMillis() - targetMsg.timestamp
+        val isWithin20Min = elapsed <= 20 * 60 * 1000L
+        val canEdit = isSender && !isDeleted && isWithin20Min && targetMsg.dataType == "text"
+        val remainingMin = ((20 * 60 * 1000L - elapsed) / 60000L).coerceAtLeast(0)
 
         AlertDialog(
             onDismissRequest = { selectedMessageForDelete = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.Delete,
+                        imageVector = Icons.Default.MoreVert,
                         contentDescription = null,
                         tint = NeonCyan,
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Delete Message?", color = TextPrimary)
+                    Text("Message Options", color = TextPrimary)
                 }
             },
             text = {
-                Text(
-                    text = if (isSender)
-                        "You can delete this message for everyone or delete it only from this device."
-                    else
-                        "Delete this message from your device?",
-                    color = TextSecondary,
-                    fontSize = 14.sp
-                )
+                Column {
+                    if (!targetMsg.content.isNullOrBlank() && !isDeleted) {
+                        Text(
+                            text = "\"${targetMsg.content.take(80)}\"",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                    if (isSender && !isDeleted && targetMsg.dataType == "text") {
+                        if (canEdit) {
+                            Text(
+                                text = "⏱️ You can edit this message (${remainingMin}m remaining).",
+                                color = NeonCyan,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        } else {
+                            Text(
+                                text = "⏱️ Edit window expired (20 min limit).",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Column(horizontalAlignment = Alignment.End) {
-                    if (isSender) {
+                    // Copy action
+                    if (!targetMsg.content.isNullOrBlank() && !isDeleted) {
+                        TextButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                clipboard?.setPrimaryClip(ClipData.newPlainText("Encrypted Message", targetMsg.content))
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                selectedMessageForDelete = null
+                            }
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("COPY TEXT", color = NeonCyan, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Reply action
+                    TextButton(
+                        onClick = {
+                            viewModel.setReplyingTo(targetMsg)
+                            selectedMessageForDelete = null
+                        }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("REPLY", color = NeonCyan, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        }
+                    }
+
+                    // Edit action (strictly within 20 minutes)
+                    if (canEdit) {
+                        TextButton(
+                            onClick = {
+                                messageToEdit = targetMsg
+                                selectedMessageForDelete = null
+                            }
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Edit, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("EDIT (${remainingMin}m left)", color = Color(0xFF00E676), fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Delete for everyone
+                    if (isSender && !isDeleted) {
                         TextButton(
                             onClick = {
                                 viewModel.deleteMessageForEveryone(targetMsg)
                                 selectedMessageForDelete = null
                             }
                         ) {
-                            Text(
-                                text = "DELETE FOR EVERYONE",
-                                color = DuressCrimson,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = DuressCrimson, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("DELETE FOR EVERYONE", color = DuressCrimson, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                            }
                         }
                     }
+
+                    // Delete for me
                     TextButton(
                         onClick = {
                             viewModel.deleteMessageForMe(targetMsg)
                             selectedMessageForDelete = null
                         }
                     ) {
-                        Text(
-                            text = "DELETE FOR ME",
-                            color = NeonCyan,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("DELETE FOR ME", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        }
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { selectedMessageForDelete = null }) {
                     Text("CANCEL", color = TextMuted)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
+
+    // Edit message dialog (within 20 minutes window)
+    if (messageToEdit != null) {
+        val targetEditMsg = messageToEdit!!
+        val elapsed = System.currentTimeMillis() - targetEditMsg.timestamp
+        val remainingMin = ((20 * 60 * 1000L - elapsed) / 60000L).coerceAtLeast(0)
+        var editedContent by remember(targetEditMsg.messageId) {
+            mutableStateOf(targetEditMsg.content ?: "")
+        }
+
+        AlertDialog(
+            onDismissRequest = { messageToEdit = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Edit Message", color = TextPrimary)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Edit window: ${remainingMin}m remaining (max 20 min)",
+                        color = NeonCyan,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = editedContent,
+                        onValueChange = { editedContent = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        maxLines = 6
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val trimmed = editedContent.trim()
+                        if (trimmed.isNotBlank() && trimmed != targetEditMsg.content) {
+                            viewModel.editMessage(targetEditMsg, trimmed)
+                        }
+                        messageToEdit = null
+                    },
+                    enabled = editedContent.isNotBlank() && editedContent.trim() != targetEditMsg.content
+                ) {
+                    Text(
+                        text = "SAVE EDIT",
+                        color = if (editedContent.isNotBlank() && editedContent.trim() != targetEditMsg.content) NeonCyan else TextMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { messageToEdit = null }) {
+                    Text("CANCEL", color = TextMuted)
+                }
+            },
+            containerColor = DarkCard
+        )
+    }
+
+    // Message Not Found Dialog (shown when tapped quoted message is missing on this receiver's device)
+    if (showMessageNotFoundDialog) {
+        AlertDialog(
+            onDismissRequest = { showMessageNotFoundDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null,
+                    tint = NeonCyan,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Message not found",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "The original quoted message is not available on this device.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showMessageNotFoundDialog = false }) {
+                    Text("OK", color = NeonCyan, fontWeight = FontWeight.Bold)
                 }
             },
             containerColor = DarkCard
@@ -1337,6 +1734,7 @@ fun MessageBubble(
     message: MessageEntity,
     isMe: Boolean,
     isUnread: Boolean = false,
+    isHighlighted: Boolean = false,
     voicePlayerManager: VoicePlayerManager,
     senderBubbleColor: Color = DarkCard,
     receiverBubbleColor: Color = DarkSurfaceVariant,
@@ -1344,6 +1742,7 @@ fun MessageBubble(
     fontSize: androidx.compose.ui.unit.TextUnit = 15.sp,
     readReceiptsEnabled: Boolean = true,
     onReply: (MessageEntity) -> Unit = {},
+    onQuotedClick: (String?, String?) -> Unit = { _, _ -> },
     onLongClick: () -> Unit = {}
 ) {
     val timeFormatted = remember(message.timestamp) {
@@ -1364,6 +1763,18 @@ fun MessageBubble(
     )
     val haptic = LocalHapticFeedback.current
     var hapticTriggered by remember { mutableStateOf(false) }
+
+    val isReplying = !isDeleted && (!message.replyToContent.isNullOrBlank() || !message.replyToMessageId.isNullOrBlank())
+    val highlightBorderColor by animateColorAsState(
+        targetValue = if (isHighlighted) NeonCyan else Color.Transparent,
+        animationSpec = tween(300),
+        label = "highlight_border"
+    )
+    val highlightBgAlpha by animateFloatAsState(
+        targetValue = if (isHighlighted) 0.3f else 0f,
+        animationSpec = tween(300),
+        label = "highlight_bg"
+    )
 
     Box(
         modifier = Modifier
@@ -1436,8 +1847,9 @@ fun MessageBubble(
                     )
                     .background(if (isMe) senderBubbleColor else receiverBubbleColor)
                     .border(
-                        if (isUnread && !isMe) 1.5.dp else 1.dp,
-                        if (isDeleted) Color.White.copy(alpha = 0.05f)
+                        if (isHighlighted) 2.dp else if (isUnread && !isMe) 1.5.dp else 1.dp,
+                        if (isHighlighted) highlightBorderColor
+                        else if (isDeleted) Color.White.copy(alpha = 0.05f)
                         else if (isUnread && !isMe) NeonCyan.copy(alpha = 0.8f)
                         else if (isMe) NeonCyan.copy(alpha = 0.3f)
                         else Color.White.copy(alpha = 0.1f),
@@ -1449,7 +1861,11 @@ fun MessageBubble(
                         )
                     )
                     .combinedClickable(
-                        onClick = {},
+                        onClick = {
+                            if (isReplying) {
+                                onQuotedClick(message.replyToMessageId, message.replyToContent)
+                            }
+                        },
                         onLongClick = onLongClick
                     )
                     .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -1464,6 +1880,9 @@ fun MessageBubble(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(DarkBackground.copy(alpha = 0.45f))
                                 .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                                .clickable {
+                                    onQuotedClick(message.replyToMessageId, message.replyToContent)
+                                }
                                 .padding(horizontal = 8.dp, vertical = 5.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1645,6 +2064,17 @@ fun MessageBubble(
                                 )
                             }
                             Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        // Edited indicator
+                        if (message.isEdited) {
+                            Text(
+                                text = "Edited • ",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontStyle = FontStyle.Italic
+                                ),
+                                color = TextMuted.copy(alpha = 0.8f)
+                            )
                         }
 
                         // Timestamp
@@ -1974,12 +2404,51 @@ fun AudioTrackBubbleContent(
 }
 
 @Composable
+fun AnimatedTypingDots(
+    modifier: Modifier = Modifier,
+    color: Color = NeonCyan
+) {
+    val transition = rememberInfiniteTransition(label = "typing_dots_transition")
+    val dotCount = 3
+    val dots = (0 until dotCount).map { index ->
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = -6f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(400, delayMillis = index * 120, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "dot_offset_$index"
+        )
+    }
+
+    Row(
+        modifier = modifier.padding(start = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        dots.forEach { offset ->
+            Box(
+                modifier = Modifier
+                    .offset(y = offset.value.dp)
+                    .size(4.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
+        }
+    }
+}
+
+@Composable
 fun ChatInputBar(
     text: String,
     onTextChange: (String) -> Unit,
     onAttachClick: () -> Unit,
+    onCameraClick: () -> Unit = {},
     onSend: () -> Unit,
-    onSendVoiceMessage: (File, Long) -> Unit
+    onSendVoiceMessage: (File, Long) -> Unit,
+    onVoiceRecordingStarted: () -> Unit = {},
+    onVoiceRecordingStopped: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val recorderHelper = remember { AudioRecorderHelper() }
@@ -1992,7 +2461,9 @@ fun ChatInputBar(
     ) { granted ->
         if (granted) {
             val started = recorderHelper.startRecording(context)
-            if (!started) {
+            if (started) {
+                onVoiceRecordingStarted()
+            } else {
                 Toast.makeText(context, "Could not start audio recording", Toast.LENGTH_SHORT).show()
             }
         } else {
@@ -2076,7 +2547,10 @@ fun ChatInputBar(
 
                 // Cancel button (Trash)
                 IconButton(
-                    onClick = { recorderHelper.cancelRecording() },
+                    onClick = {
+                        recorderHelper.cancelRecording()
+                        onVoiceRecordingStopped()
+                    },
                     modifier = Modifier
                         .size(38.dp)
                         .background(Color.White.copy(alpha = 0.08f), CircleShape)
@@ -2094,6 +2568,7 @@ fun ChatInputBar(
                 IconButton(
                     onClick = {
                         val result = recorderHelper.stopRecording()
+                        onVoiceRecordingStopped()
                         if (result != null) {
                             onSendVoiceMessage(result.first, result.second)
                         } else {
@@ -2126,6 +2601,21 @@ fun ChatInputBar(
                         contentDescription = "Attach File",
                         tint = NeonCyan
                     )
+                }
+
+                // Camera option in typing area: smoothly hidden when typing to expand input area
+                AnimatedVisibility(
+                    visible = text.isBlank(),
+                    enter = fadeIn(tween(150)) + expandHorizontally(tween(150)),
+                    exit = fadeOut(tween(150)) + shrinkHorizontally(tween(150))
+                ) {
+                    IconButton(onClick = onCameraClick) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Quick Camera",
+                            tint = NeonCyan
+                        )
+                    }
                 }
 
                 OutlinedTextField(
@@ -2176,7 +2666,9 @@ fun ChatInputBar(
 
                                 if (hasAudioPermission) {
                                     val started = recorderHelper.startRecording(context)
-                                    if (!started) {
+                                    if (started) {
+                                        onVoiceRecordingStarted()
+                                    } else {
                                         Toast.makeText(context, "Could not start audio recording", Toast.LENGTH_SHORT).show()
                                     }
                                 } else {
@@ -2225,22 +2717,54 @@ fun ImageMessageContent(
                     }
                 }
 
-                // 2. Try inline base64 data URI
+                // 2. Try pre-cached received_media directory
+                if (bitmap == null) {
+                    val mediaDir = File(context.filesDir, "received_media")
+                    val cachedJpg = File(mediaDir, "${message.messageId}.jpg")
+                    val cachedPng = File(mediaDir, "${message.messageId}.png")
+                    if (cachedJpg.exists() && cachedJpg.length() > 0) {
+                        bitmap = BitmapFactory.decodeFile(cachedJpg.absolutePath)
+                    } else if (cachedPng.exists() && cachedPng.length() > 0) {
+                        bitmap = BitmapFactory.decodeFile(cachedPng.absolutePath)
+                    }
+                }
+
+                // 3. Try inline base64 data URI
                 if (bitmap == null && !message.mediaCloudUrl.isNullOrBlank() && message.mediaCloudUrl.contains("base64,")) {
                     val b64 = message.mediaCloudUrl.substringAfter("base64,")
                     val bytes = Base64.decode(b64, Base64.DEFAULT)
                     if (bytes.isNotEmpty()) {
                         bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                         // Proactively cache to local storage if missing
-                        if (message.mediaLocalUri.isNullOrBlank()) {
-                            try {
+                        try {
+                            val mediaDir = File(context.filesDir, "received_media").apply { mkdirs() }
+                            val cachedFile = File(mediaDir, "${message.messageId}.jpg")
+                            if (!cachedFile.exists()) {
+                                cachedFile.writeBytes(bytes)
+                            }
+                        } catch (ignored: Exception) {}
+                    }
+                }
+
+                // 4. Try downloading HTTP URL if still null
+                if (bitmap == null && !message.mediaCloudUrl.isNullOrBlank() && message.mediaCloudUrl.startsWith("http")) {
+                    try {
+                        val url = java.net.URL(message.mediaCloudUrl)
+                        val conn = url.openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 10000
+                        conn.readTimeout = 10000
+                        conn.requestMethod = "GET"
+                        if (conn.responseCode in 200..299) {
+                            val bytes = conn.inputStream.use { it.readBytes() }
+                            if (bytes.isNotEmpty()) {
+                                bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                 val mediaDir = File(context.filesDir, "received_media").apply { mkdirs() }
                                 val cachedFile = File(mediaDir, "${message.messageId}.jpg")
-                                if (!cachedFile.exists()) {
-                                    cachedFile.writeBytes(bytes)
-                                }
-                            } catch (ignored: Exception) {}
+                                cachedFile.writeBytes(bytes)
+                            }
                         }
+                    } catch (e: Exception) {
+                        android.util.Log.w("ChatScreen", "Failed background download of image: ${e.message}")
                     }
                 }
             } catch (e: Exception) {
@@ -2460,6 +2984,44 @@ fun ImageMessageContent(
             )
         }
         Spacer(modifier = Modifier.height(6.dp))
+    } else {
+        // Fallback placeholder card so the message bubble is never an empty 0-height box
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(DarkSurfaceVariant.copy(alpha = 0.6f))
+                .border(1.dp, NeonCyan.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+                .padding(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CameraAlt,
+                    contentDescription = "Photo",
+                    tint = NeonCyan,
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Photo",
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Image not available or expired",
+                        color = TextMuted,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
     }
 }
 

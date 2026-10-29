@@ -39,7 +39,7 @@ import com.phantom.mesh.data.local.entity.UserEntity
         MeshQueueEntity::class,
         CallLogEntity::class
     ],
-    version = 5,
+    version = 7,
     exportSchema = false
 )
 abstract class PhantomMeshDatabase : RoomDatabase() {

@@ -44,6 +44,11 @@ class AudioRecorderHelper {
     fun startRecording(context: Context): Boolean {
         if (_isRecording.value) return false
 
+        // Stop any active voice note playback so microphone does not pick it up
+        try {
+            VoicePlayerManager.stop()
+        } catch (ignored: Exception) {}
+
         return try {
             val voiceDir = File(context.filesDir, "voice_notes").apply { mkdirs() }
             val outputFile = File(voiceDir, "voice_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.m4a")

@@ -78,7 +78,7 @@ data class MeshPacket(
 
     /** Determine transfer priority: text/voice/ack/control = 0 (instant), media = 1+ */
     fun priority(): Int = when (dataType) {
-        "text", "ack", "routing", "identity", "identity_ack", "delete_msg", "drop_meta", "drop_pull", "voice" -> 0
+        "text", "ack", "routing", "identity", "identity_ack", "delete_msg", "drop_meta", "drop_pull", "voice", "typing_status", "edit_msg" -> 0
         "image", "file" -> 1
         "video" -> 2
         else -> 0

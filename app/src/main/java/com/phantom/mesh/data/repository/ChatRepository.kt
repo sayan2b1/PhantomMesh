@@ -43,7 +43,8 @@ class ChatRepository @Inject constructor(
     private val sessionManager: SessionManager,
     private val networkStateManager: NetworkStateManager,
     private val meshConnectionManager: MeshConnectionManager,
-    private val notificationHelper: com.phantom.mesh.util.NotificationHelper
+    private val notificationHelper: com.phantom.mesh.util.NotificationHelper,
+    private val typingStatusManager: com.phantom.mesh.util.TypingStatusManager
 ) {
     private val firestore = FirebaseFirestore.getInstance()
     private val storage = FirebaseStorage.getInstance()
@@ -118,6 +119,91 @@ class ChatRepository @Inject constructor(
 
     suspend fun setChatArchived(chatId: String, isArchived: Boolean) = withContext(Dispatchers.IO) {
         chatDao.setChatArchived(chatId, isArchived)
+    }
+
+    suspend fun saveDraft(chatId: String, targetId: String, draft: String?) = withContext(Dispatchers.IO) {
+        val cleanDraft = draft?.trim()?.takeIf { it.isNotBlank() }
+        val existing = chatDao.getChatById(chatId)
+        if (existing != null) {
+            chatDao.updateDraftMessage(chatId, cleanDraft)
+        } else if (cleanDraft != null) {
+            val myId = sessionManager.getUserId() ?: ""
+            val participants = listOf(myId, targetId).filter { it.isNotBlank() }.sorted().joinToString(",")
+            val cleanTitle = targetId.removePrefix("Peer ").removePrefix("Peer-").removePrefix("PEER: ").trim().ifBlank { "Encrypted Contact" }
+            val chat = com.phantom.mesh.data.local.entity.ChatEntity(
+                chatId = chatId,
+                participants = participants,
+                chatTitle = cleanTitle,
+                draftMessage = cleanDraft,
+                createdAt = System.currentTimeMillis()
+            )
+            chatDao.insertChat(chat)
+        }
+    }
+
+    suspend fun getDraft(chatId: String): String? = withContext(Dispatchers.IO) {
+        chatDao.getDraftMessage(chatId)
+    }
+
+    /**
+     * Edits a sent text message within the 20-minute time window.
+     * Updates Room DB, synchronizes across Mesh, and writes to Cloud Firestore.
+     */
+    suspend fun editMessage(
+        chatId: String,
+        targetId: String,
+        messageId: String,
+        newContent: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val existing = messageDao.getMessageById(messageId) ?: return@withContext false
+        val now = System.currentTimeMillis()
+        val elapsed = now - existing.timestamp
+        if (elapsed > 20 * 60 * 1000L) {
+            android.util.Log.w("ChatRepository", "Cannot edit message: 20-minute window expired ($elapsed ms)")
+            return@withContext false
+        }
+
+        // 1. Update local Room database
+        messageDao.updateMessageContent(messageId, newContent, now)
+
+        // 2. Update conversation preview if this was the latest message
+        val latest = messageDao.getLatestMessageForChat(chatId)
+        if (latest?.messageId == messageId) {
+            chatDao.updateLastMessage(chatId, newContent, latest.timestamp, latest.transportUsed)
+        }
+
+        // 3. Dispatch edit over Mesh (Nearby Connections)
+        val myName = sessionManager.getUsername() ?: sessionManager.getUserId() ?: ""
+        val cleanTarget = targetId.split(",").map { it.trim() }
+            .firstOrNull { it.isNotBlank() && !it.equals(myName, ignoreCase = true) } ?: targetId.trim()
+
+        val packet = MeshPacket(
+            packetId = "edit_${UUID.randomUUID().toString().take(8)}",
+            senderId = myName,
+            targetId = cleanTarget,
+            data = newContent,
+            dataType = "edit_msg",
+            refMessageId = messageId,
+            timestamp = now
+        )
+        meshConnectionManager.sendPacket(packet)
+
+        // 4. Dispatch edit over Cloud (Firestore)
+        try {
+            val updates = mapOf(
+                "content" to newContent,
+                "isEdited" to true,
+                "editedAt" to now
+            )
+            firestore.collection("chats")
+                .document(chatId)
+                .collection("messages")
+                .document(messageId)
+                .set(updates, SetOptions.merge())
+        } catch (e: Exception) {
+            android.util.Log.w("ChatRepository", "Failed cloud edit sync: ${e.message}")
+        }
+        true
     }
 
     fun observeMessages(chatId: String): Flow<List<MessageEntity>> = messageDao.observeMessages(chatId)
@@ -243,11 +329,23 @@ class ChatRepository @Inject constructor(
 
                         var maxLastRead = 0L
                         var maxLastDelivered = 0L
+                        val now = System.currentTimeMillis()
                         for (candidate in peerCandidates) {
                             val r = snapshot.getLong("lastRead_$candidate") ?: 0L
                             if (r > maxLastRead) maxLastRead = r
                             val d = snapshot.getLong("lastDelivered_$candidate") ?: 0L
                             if (d > maxLastDelivered) maxLastDelivered = d
+
+                            // Live peer typing & voice recording indicators from cloud
+                            val typStatus = snapshot.getString("typing_$candidate")
+                            val typTime = snapshot.getLong("typingTime_$candidate") ?: 0L
+                            if (typStatus == "typing" && now - typTime < 8000L) {
+                                typingStatusManager.setPeerTypingState(chatId, candidate, com.phantom.mesh.util.TypingStatusManager.TypingState.TYPING)
+                            } else if (typStatus == "recording" && now - typTime < 35000L) {
+                                typingStatusManager.setPeerTypingState(chatId, candidate, com.phantom.mesh.util.TypingStatusManager.TypingState.RECORDING)
+                            } else if (typStatus == "idle") {
+                                typingStatusManager.setPeerTypingState(chatId, candidate, com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE)
+                            }
                         }
 
                         if (maxLastRead > 0L) {
@@ -293,6 +391,22 @@ class ChatRepository @Inject constructor(
                                     val localMsg = messageDao.getMessageById(messageId)
                                     if (localMsg != null && localMsg.deliveryStatus != "read") {
                                         messageDao.updateDeliveryStatus(messageId, "delivered")
+                                    }
+                                }
+                            }
+
+                            // Remote edit sync from cloud
+                            if (doc.getBoolean("isEdited") == true) {
+                                val remoteContent = doc.getString("content")
+                                val editedAt = doc.getLong("editedAt") ?: System.currentTimeMillis()
+                                if (!remoteContent.isNullOrBlank()) {
+                                    val localMsg = messageDao.getMessageById(messageId)
+                                    if (localMsg != null && localMsg.content != remoteContent) {
+                                        messageDao.updateMessageContent(messageId, remoteContent, editedAt)
+                                        val latest = messageDao.getLatestMessageForChat(chatId)
+                                        if (latest?.messageId == messageId) {
+                                            chatDao.updateLastMessage(chatId, remoteContent, latest.timestamp, latest.transportUsed)
+                                        }
                                     }
                                 }
                             }
@@ -430,6 +544,15 @@ class ChatRepository @Inject constructor(
         // Ensure parent chat entry exists FIRST
         ensureChatExists(chatId, targetId, previewTag, now, if (isOnline) "cloud" else "mesh")
 
+        // Auto-optimize images (downsample to 1280px max + JPEG 80 + correct EXIF rotation)
+        // so camera photos and attachments transmit lightning-fast and never hit storage/memory limits
+        val effectiveFile = if (dataType == "image" || mimeType.startsWith("image")) {
+            val optFile = File(context.cacheDir, "opt_send_${System.currentTimeMillis()}.jpg")
+            com.phantom.mesh.util.HardwareStateUtil.optimizeImage(localFile, optFile)
+        } else {
+            localFile
+        }
+
         val message = MessageEntity(
             messageId = messageId,
             chatId = chatId,
@@ -437,8 +560,8 @@ class ChatRepository @Inject constructor(
             targetId = targetId,
             content = contentName,
             dataType = dataType,
-            mediaLocalUri = localFile.absolutePath,
-            mediaSizeBytes = localFile.length(),
+            mediaLocalUri = effectiveFile.absolutePath,
+            mediaSizeBytes = effectiveFile.length(),
             mimeType = mimeType,
             deliveryStatus = "saved",
             hopCount = 0,
@@ -455,17 +578,17 @@ class ChatRepository @Inject constructor(
             var cloudUrl: String? = null
             // 1. Attempt Firebase Storage upload
             try {
-                val storageRef = storage.reference.child("ephemeral_media/$chatId/$messageId/${localFile.name}")
-                val uploadTask = storageRef.putFile(android.net.Uri.fromFile(localFile)).await()
+                val storageRef = storage.reference.child("ephemeral_media/$chatId/$messageId/${effectiveFile.name}")
+                val uploadTask = storageRef.putFile(android.net.Uri.fromFile(effectiveFile)).await()
                 cloudUrl = uploadTask.storage.downloadUrl.await().toString()
             } catch (e: Exception) {
                 android.util.Log.w("ChatRepository", "Storage upload not available (${e.message}), trying inline data fallback")
             }
 
-            // 2. Resilient fallback: If Firebase Storage is not provisioned, encode image as data URI directly in Firestore document
-            if (cloudUrl == null && localFile.length() < 750 * 1024) {
+            // 2. Resilient fallback: If Firebase Storage is not provisioned or fails, encode image as data URI directly in Firestore document
+            if (cloudUrl == null && (dataType == "image" || effectiveFile.length() < 750 * 1024)) {
                 try {
-                    val bytes = localFile.readBytes()
+                    val bytes = effectiveFile.readBytes()
                     val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                     cloudUrl = "data:$mimeType;base64,$b64"
                     android.util.Log.i("ChatRepository", "Image encoded as inline data URI (${bytes.size} bytes)")
@@ -474,17 +597,19 @@ class ChatRepository @Inject constructor(
                 }
             }
 
-            if (cloudUrl != null) {
+            val finalMessage = if (cloudUrl != null) {
                 val updatedMessage = message.copy(mediaCloudUrl = cloudUrl)
                 messageDao.updateMessage(updatedMessage)
                 routeViaCloud(updatedMessage)
+                updatedMessage
             } else {
-                routeViaMesh(message)
+                routeViaCloud(message)
+                message
             }
 
             // Also broadcast to nearby mesh peers if connected
             if (meshConnectionManager.hasActivePeers()) {
-                routeViaMesh(message)
+                routeViaMesh(finalMessage)
             }
         } else {
             // Offline: Enqueue to Priority Queue for Wi-Fi Direct
@@ -825,13 +950,10 @@ class ChatRepository @Inject constructor(
                 } else if (!message.mediaLocalUri.isNullOrBlank()) {
                     val file = File(message.mediaLocalUri)
                     if (file.exists()) {
-                        val bytes = if (file.length() > 750 * 1024) {
+                        val bytes = if (file.length() > 500 * 1024) {
                             try {
-                                val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                                val bos = java.io.ByteArrayOutputStream()
-                                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, bos)
-                                bmp.recycle()
-                                bos.toByteArray()
+                                val optFile = File(context.cacheDir, "mesh_opt_${System.currentTimeMillis()}.jpg")
+                                com.phantom.mesh.util.HardwareStateUtil.optimizeImage(file, optFile).readBytes()
                             } catch (e: Exception) {
                                 file.readBytes()
                             }
@@ -905,6 +1027,48 @@ class ChatRepository @Inject constructor(
         // Feature 3: Discard packets from blocked peers
         if (sessionManager.isUserBlocked(packet.senderId)) {
             android.util.Log.i("ChatRepository", "Ignored mesh packet from blocked peer: ${packet.senderId}")
+            return
+        }
+
+        // Live typing and recording status packets over mesh
+        if (packet.dataType == "typing_status") {
+            val state = when (packet.data) {
+                "typing" -> com.phantom.mesh.util.TypingStatusManager.TypingState.TYPING
+                "recording" -> com.phantom.mesh.util.TypingStatusManager.TypingState.RECORDING
+                else -> com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE
+            }
+            val currentUserId = sessionManager.getUserId() ?: meshConnectionManager.getLocalUserId() ?: "anon_recipient"
+            val currentUsername = sessionManager.getUsername() ?: meshConnectionManager.getLocalDisplayName()
+            val myIdentity = currentUsername ?: currentUserId
+            val senderIdentity = packet.senderId
+
+            val potentialChatId = generateChatId(senderIdentity, myIdentity)
+            val fallbackChatId = generateChatId(senderIdentity, packet.targetId)
+            val existingChat = chatDao.getChatById(potentialChatId) ?: chatDao.getChatById(fallbackChatId)
+            val cid = existingChat?.chatId ?: potentialChatId
+
+            typingStatusManager.setPeerTypingState(cid, packet.senderId, state)
+            return
+        }
+
+        // Live message edit packet over mesh
+        if (packet.dataType == "edit_msg") {
+            val targetMessageId = packet.refMessageId ?: packet.data.substringBefore(":::")
+            val newContent = packet.data
+            if (!targetMessageId.isNullOrBlank()) {
+                val existing = messageDao.getMessageById(targetMessageId)
+                if (existing != null) {
+                    val elapsed = packet.timestamp - existing.timestamp
+                    if (elapsed <= 25 * 60 * 1000L) { // 20m + 5m clock-skew tolerance
+                        messageDao.updateMessageContent(targetMessageId, newContent, packet.timestamp)
+                        val latest = messageDao.getLatestMessageForChat(existing.chatId)
+                        if (latest?.messageId == targetMessageId) {
+                            chatDao.updateLastMessage(existing.chatId, newContent, latest.timestamp, latest.transportUsed)
+                        }
+                        android.util.Log.i("ChatRepository", "Updated edited message $targetMessageId via mesh")
+                    }
+                }
+            }
             return
         }
 
@@ -1130,11 +1294,23 @@ class ChatRepository @Inject constructor(
 
                             var maxLastRead = 0L
                             var maxLastDelivered = 0L
+                            val now = System.currentTimeMillis()
                             for (candidate in peerCandidates) {
                                 val r = doc.getLong("lastRead_$candidate") ?: 0L
                                 if (r > maxLastRead) maxLastRead = r
                                 val d = doc.getLong("lastDelivered_$candidate") ?: 0L
                                 if (d > maxLastDelivered) maxLastDelivered = d
+
+                                // Live peer typing & voice recording indicators for conversation list
+                                val typStatus = doc.getString("typing_$candidate")
+                                val typTime = doc.getLong("typingTime_$candidate") ?: 0L
+                                if (typStatus == "typing" && now - typTime < 8000L) {
+                                    typingStatusManager.setPeerTypingState(cid, candidate, com.phantom.mesh.util.TypingStatusManager.TypingState.TYPING)
+                                } else if (typStatus == "recording" && now - typTime < 35000L) {
+                                    typingStatusManager.setPeerTypingState(cid, candidate, com.phantom.mesh.util.TypingStatusManager.TypingState.RECORDING)
+                                } else if (typStatus == "idle") {
+                                    typingStatusManager.setPeerTypingState(cid, candidate, com.phantom.mesh.util.TypingStatusManager.TypingState.IDLE)
+                                }
                             }
 
                             if (maxLastRead > 0L) {
@@ -1289,6 +1465,26 @@ class ChatRepository @Inject constructor(
                                     android.util.Log.i("ChatRepository", "Saved received cloud image to: $localSavedUri (${bytes.size} bytes)")
                                 } catch (e: Exception) {
                                     android.util.Log.e("ChatRepository", "Error decoding cloud base64 image: ${e.message}", e)
+                                }
+                            } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("http")) {
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val mediaDir = File(context.filesDir, "received_media").apply { mkdirs() }
+                                        val ext = if (mimeType?.contains("png") == true) "png" else "jpg"
+                                        val localFile = File(mediaDir, "${messageId}.$ext")
+                                        if (!localFile.exists()) {
+                                            val url = java.net.URL(mediaCloudUrl)
+                                            val conn = url.openConnection() as java.net.HttpURLConnection
+                                            conn.connectTimeout = 10000
+                                            conn.readTimeout = 10000
+                                            conn.inputStream.use { input ->
+                                                localFile.outputStream().use { output -> input.copyTo(output) }
+                                            }
+                                            messageDao.updateMediaLocalUri(messageId, localFile.absolutePath)
+                                        }
+                                    } catch (e: Exception) {
+                                        android.util.Log.w("ChatRepository", "Async download failed for cloud image: ${e.message}")
+                                    }
                                 }
                             } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio")) {
                                 try {
@@ -1564,7 +1760,27 @@ class ChatRepository @Inject constructor(
                                     } catch (e: Exception) {
                                         android.util.Log.e("ChatRepository", "Error decoding polling image: ${e.message}", e)
                                     }
-                                } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio")) {
+                                } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("http")) {
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val mediaDir = File(context.filesDir, "received_media").apply { mkdirs() }
+                                        val ext = if (mimeType?.contains("png") == true) "png" else "jpg"
+                                        val localFile = File(mediaDir, "${messageId}.$ext")
+                                        if (!localFile.exists()) {
+                                            val url = java.net.URL(mediaCloudUrl)
+                                            val conn = url.openConnection() as java.net.HttpURLConnection
+                                            conn.connectTimeout = 10000
+                                            conn.readTimeout = 10000
+                                            conn.inputStream.use { input ->
+                                                localFile.outputStream().use { output -> input.copyTo(output) }
+                                            }
+                                            messageDao.updateMediaLocalUri(messageId, localFile.absolutePath)
+                                        }
+                                    } catch (e: Exception) {
+                                        android.util.Log.w("ChatRepository", "Async download failed for cloud image: ${e.message}")
+                                    }
+                                }
+                            } else if (!mediaCloudUrl.isNullOrBlank() && mediaCloudUrl.startsWith("data:audio")) {
                                     try {
                                         val b64 = mediaCloudUrl.substringAfter("base64,")
                                         val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
@@ -1725,6 +1941,14 @@ class ChatRepository @Inject constructor(
                 chatDao.updateLastMessage(chatId, preview, bestTimestamp, transport)
             }
         }
+        // Successfully dispatched message — clear any unsent draft
+        try {
+            chatDao.updateDraftMessage(chatId, null)
+        } catch (_: Exception) {}
+    }
+
+    suspend fun getMessageById(messageId: String): MessageEntity? = withContext(Dispatchers.IO) {
+        messageDao.getMessageById(messageId)
     }
 
     companion object {

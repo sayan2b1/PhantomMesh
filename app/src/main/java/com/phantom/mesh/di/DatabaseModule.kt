@@ -67,6 +67,25 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            try {
+                db.execSQL("ALTER TABLE chats ADD COLUMN draft_message TEXT DEFAULT NULL")
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            try {
+                db.execSQL("ALTER TABLE messages ADD COLUMN is_edited INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Throwable) {}
+            try {
+                db.execSQL("ALTER TABLE messages ADD COLUMN edited_at INTEGER DEFAULT NULL")
+            } catch (_: Throwable) {}
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): PhantomMeshDatabase {
@@ -75,7 +94,7 @@ object DatabaseModule {
             PhantomMeshDatabase::class.java,
             PhantomMeshDatabase.DATABASE_NAME
         )
-            .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration()
             .build()
     }

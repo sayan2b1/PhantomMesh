@@ -26,10 +26,14 @@ class ChatListViewModel @Inject constructor(
     private val meshConnectionManager: MeshConnectionManager,
     private val routingTable: MeshRoutingTable,
     private val contactAliasManager: ContactAliasManager,
-    private val callManager: com.phantom.mesh.calling.CallManager
+    private val callManager: com.phantom.mesh.calling.CallManager,
+    private val typingStatusManager: com.phantom.mesh.util.TypingStatusManager
 ) : ViewModel() {
 
     val activeTransport: StateFlow<NetworkTransport> = networkStateManager.activeTransport
+
+    val peerTypingStates: StateFlow<Map<String, com.phantom.mesh.util.TypingStatusManager.TypingState>> =
+        typingStatusManager.peerTypingStates
 
     val connectedPeers: StateFlow<List<MeshRoutingTable.MeshNode>> = routingTable.topology
 
@@ -92,6 +96,8 @@ class ChatListViewModel @Inject constructor(
     fun clearAlias(usernameOrId: String) {
         contactAliasManager.clearAlias(usernameOrId)
     }
+
+    fun getPeerTypingState(chatId: String) = typingStatusManager.getPeerTypingState(chatId)
 
     init {
         viewModelScope.launch {

@@ -3,7 +3,7 @@
 > **Decentralized, Off-Grid Mesh & Hybrid Cloud Messenger for Android**
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
-[![Version](https://img.shields.io/badge/Version-v2.5.0-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
+[![Version](https://img.shields.io/badge/Version-v3.0.0-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
 [![Language](https://img.shields.io/badge/Language-Kotlin-blue.svg)](https://kotlinlang.org/)
 [![UI](https://img.shields.io/badge/UI-Jetpack%20Compose-purple.svg)](https://developer.android.com/jetpack/compose)
 [![Mesh Engine](https://img.shields.io/badge/Engine-Nearby%20Connections%20P2P-cyan.svg)](https://developers.google.com/nearby/connections/overview)
@@ -43,6 +43,40 @@
 ### 💬 Swipe-to-Reply & Quoted Context
 - **Fluid Gesture Control**: Swipe right on any message bubble with a smooth spring animation and haptic vibration feedback.
 - **Quoted Message Context**: Displays an active reply preview bar above the input box and embeds the quoted sender and snippet inside the sent message bubble.
+
+### 🎯 Interactive Quoted Message Navigation & "Message Not Found" Dialog
+- **One-Tap Quote Navigation**: Tap on any quoted message banner or replied message bubble to instantly and smoothly auto-scroll backwards to the original message in the conversation.
+- **Neon Glow Focus Highlight**: The referenced original message glows with an animated neon cyan border and subtle background flash for 1.8 seconds.
+- **Graceful Deletion Handling**: If the quoted message has been deleted or is not present in local storage, an alert pop-up cleanly notifies the user: `"Message not found"`.
+
+### ⚡ Real-Time Live Typing & Voice Recording Presence
+- **Dual-Transport Presence Detection**: Broadcasts and receives live typing and audio recording indicators seamlessly across both **Bluetooth/Wi-Fi Direct Mesh** (`typing_status` packets) and **Cloud Firestore** listeners.
+- **Animated Jumping Typing Dots**: Sleek wave-jumping three-dot cyan animation (`$user is typing...`).
+- **Pulsing Audio Note Indicator**: Real-time warm amber pulsing mic badge and waveform alert (`$user is recording audio...`).
+- **Instant Idle Reset**: Automatically resets typing/recording state to idle on message dispatch, input clearing, or recording cancel/completion.
+
+### 📝 WhatsApp-Style Message Drafts
+- **Persistent Text Drafts**: Automatically saves unsent input into the SQLite Room database (`ChatEntity.draftMessage`) on every keystroke.
+- **Seamless Draft Recovery**: Automatically restores unsaved drafts upon reopening any conversation.
+- **Conversation List Draft Badges**: Displays a high-contrast green `"Draft: ..."` snippet directly on conversation list items.
+- **Auto-Clearing Lifecycle**: Cleanly purges drafts upon message dispatch.
+
+### 🔇 Single-Stream Mutually Exclusive Audio & Voice Playback
+- **Centralized Voice & Audio Player (`VoicePlayerManager`)**: Strict singleton audio coordinator guarantees that only one voice note or music track plays at any time across the entire application.
+- **Zero Audio Overlap**: Starting a new voice note or audio track immediately stops and releases any currently active playback.
+- **Background Release**: Playback automatically halts upon exiting conversation or disposing player lifecycle.
+
+### ✏️ In-Place Message Editing (20-Minute Window)
+- **Time-Bounded Editing**: Long-press any sent message within 20 minutes of sending to edit text.
+- **Live Character Counter & Modal**: Dedicated edit dialog with character count and validation.
+- **Cross-Transport Sync**: Transmits `edit_msg` packets across both Bluetooth Mesh and Cloud Firestore to update recipient devices in real-time.
+- **Edited Timestamp Marker**: Highlights edited messages with a discreet `Edited • ` indicator next to the message delivery timestamp.
+
+### 📷 Quick In-Typing-Area Camera with Dynamic Auto-Hide
+- **Instant Photo Capture**: Dedicated camera shutter button embedded directly inside the input bar for one-tap photo taking.
+- **Smart Adaptive Input Bar**: Camera button smoothly animates out (`fadeIn`/`fadeOut` + `expandHorizontally`/`shrinkHorizontally`) as soon as the user starts typing, maximizing the typing area.
+- **Hardware-Aware Downsampling & Compression**: Automatically rotates via EXIF orientation tags, downsamples large sensor dimensions to 1280px, and compresses with JPEG quality 80 (~150 KB – 250 KB) to prevent packet drops and upload timeouts.
+- **Guaranteed Inline Cloud Fallback**: Automatically encodes images into base64 data URIs if Cloud Storage is unconfigured or throttled, guaranteeing photos always deliver across both Cloud and Mesh.
 
 ### 🔊 WhatsApp-Style Instant Audio Feedback
 - **Zero-Latency Synthetic PCM**: Pure synthesized audio tones for outgoing message "pop", incoming message chime, and call ringtones without external asset overhead.
