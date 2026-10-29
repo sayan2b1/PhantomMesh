@@ -895,7 +895,7 @@ class ChatRepository @Inject constructor(
                 "content" to message.content,
                 "dataType" to message.dataType,
                 "mediaCloudUrl" to message.mediaCloudUrl,
-                "mimeType" to (message.mimeType ?: "image/jpeg"),
+                "mimeType" to message.mimeType,
                 "mediaSizeBytes" to message.mediaSizeBytes,
                 "deliveryStatus" to "mesh_sent",
                 "timestamp" to message.timestamp,
@@ -1445,9 +1445,10 @@ class ChatRepository @Inject constructor(
 
                             val content = doc.getString("content")
                             val dataType = doc.getString("dataType") ?: "text"
-                            val mimeType = doc.getString("mimeType") ?: if (dataType == "image") "image/jpeg" else null
-                            val mediaSizeBytes = doc.getLong("mediaSizeBytes") ?: 0L
                             val mediaCloudUrl = doc.getString("mediaCloudUrl")
+                            val hasMedia = !mediaCloudUrl.isNullOrBlank()
+                            val mimeType = if (!hasMedia && dataType == "text") null else (doc.getString("mimeType") ?: if (dataType == "image") "image/jpeg" else null)
+                            val mediaSizeBytes = doc.getLong("mediaSizeBytes") ?: 0L
                             val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
 
                             val displayPeer = if (senderUsername.isNotBlank()) senderUsername else senderId
@@ -1742,9 +1743,10 @@ class ChatRepository @Inject constructor(
 
                                 val content = doc.getString("content")
                                 val dataType = doc.getString("dataType") ?: "text"
-                                val mimeType = doc.getString("mimeType") ?: if (dataType == "image") "image/jpeg" else null
-                                val mediaSizeBytes = doc.getLong("mediaSizeBytes") ?: 0L
                                 val mediaCloudUrl = doc.getString("mediaCloudUrl")
+                                val hasMedia = !mediaCloudUrl.isNullOrBlank()
+                                val mimeType = if (!hasMedia && dataType == "text") null else (doc.getString("mimeType") ?: if (dataType == "image") "image/jpeg" else null)
+                                val mediaSizeBytes = doc.getLong("mediaSizeBytes") ?: 0L
                                 val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
 
                                 var localSavedUri: String? = null

@@ -1946,14 +1946,17 @@ fun MessageBubble(
                                 message.mediaLocalUri?.endsWith(".m4a", ignoreCase = true) == true ||
                                 message.mediaLocalUri?.endsWith(".wav", ignoreCase = true) == true)
 
-                        val isImage = !isVoice && !isAudio && (message.dataType == "image" ||
-                                message.mimeType?.startsWith("image") == true ||
-                                message.mediaCloudUrl?.startsWith("data:image") == true ||
-                                message.mediaLocalUri?.endsWith(".jpg", ignoreCase = true) == true ||
-                                message.mediaLocalUri?.endsWith(".png", ignoreCase = true) == true ||
-                                message.content?.endsWith(".jpg", ignoreCase = true) == true ||
-                                message.content?.endsWith(".png", ignoreCase = true) == true ||
-                                message.content?.startsWith("attachment_", ignoreCase = true) == true)
+                        val hasMedia = !message.mediaCloudUrl.isNullOrBlank() || !message.mediaLocalUri.isNullOrBlank()
+
+                        val isImage = !isVoice && !isAudio && message.dataType != "text" && (
+                            message.dataType == "image" ||
+                            (hasMedia && message.mimeType?.startsWith("image") == true) ||
+                            message.mediaCloudUrl?.startsWith("data:image") == true ||
+                            message.mediaLocalUri?.endsWith(".jpg", ignoreCase = true) == true ||
+                            message.mediaLocalUri?.endsWith(".png", ignoreCase = true) == true ||
+                            (hasMedia && (message.content?.endsWith(".jpg", ignoreCase = true) == true || message.content?.endsWith(".png", ignoreCase = true) == true)) ||
+                            message.content?.startsWith("attachment_", ignoreCase = true) == true
+                        )
 
                         val isVideo = !isVoice && !isAudio && !isImage && (message.dataType == "video" || message.mimeType?.startsWith("video") == true)
 
