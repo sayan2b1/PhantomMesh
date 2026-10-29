@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneMissed
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -84,6 +86,36 @@ fun CallHistoryScreen(
     val callLogs by viewModel.callLogs.collectAsState()
     val callBlockedNotice by viewModel.callBlockedNotice.collectAsState()
     val context = LocalContext.current
+
+    var selectedFilter by remember { mutableStateOf("ALL") } // "ALL" or "MISSED"
+
+    val missedCount = remember(callLogs) {
+        callLogs.count { log ->
+            val raw = log.status.uppercase()
+            log.direction.equals("MISSED", ignoreCase = true) ||
+            raw == "MISSED" ||
+            raw == "DECLINED" ||
+            raw == "REJECTED" ||
+            raw == "NOT_ANSWERED" ||
+            raw == "NOT_CONNECTED"
+        }
+    }
+
+    val filteredLogs = remember(callLogs, selectedFilter) {
+        if (selectedFilter == "MISSED") {
+            callLogs.filter { log ->
+                val raw = log.status.uppercase()
+                log.direction.equals("MISSED", ignoreCase = true) ||
+                raw == "MISSED" ||
+                raw == "DECLINED" ||
+                raw == "REJECTED" ||
+                raw == "NOT_ANSWERED" ||
+                raw == "NOT_CONNECTED"
+            }
+        } else {
+            callLogs
+        }
+    }
 
     var showClearAllDialog by remember { mutableStateOf(false) }
     var selectedLogToDelete by remember { mutableStateOf<CallLogEntity?>(null) }
@@ -211,36 +243,103 @@ fun CallHistoryScreen(
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(callLogs, key = { it.callId }) { log ->
-                        val formattedName = viewModel.getFormattedDisplayName(log.peerUsername)
-                        CallLogRow(
-                            log = log,
-                            displayName = formattedName,
-                            onVoiceClick = {
-                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                    viewModel.startVoiceCall(log.peerUsername, log.peerAddress.ifBlank { log.peerUsername })
-                                } else {
-                                    pendingCallTarget = Pair(log.peerUsername, false)
-                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                }
-                            },
-                            onVideoClick = {
-                                val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-                                val hasCam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                                if (hasAudio && hasCam) {
-                                    viewModel.startVideoCall(log.peerUsername, log.peerAddress.ifBlank { log.peerUsername })
-                                } else {
-                                    pendingCallTarget = Pair(log.peerUsername, true)
-                                    videoPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
-                                }
-                            },
-                            onLongClick = {
-                                selectedLogToDelete = log
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Filter Tab Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selectedFilter == "ALL") NeonCyan.copy(alpha = 0.15f) else DarkCard)
+                                .border(
+                                    1.dp,
+                                    if (selectedFilter == "ALL") NeonCyan else TextMuted.copy(alpha = 0.3f),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { selectedFilter = "ALL" }
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "ALL (${callLogs.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (selectedFilter == "ALL") NeonCyan else TextMuted
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selectedFilter == "MISSED") DuressCrimson.copy(alpha = 0.15f) else DarkCard)
+                                .border(
+                                    1.dp,
+                                    if (selectedFilter == "MISSED") DuressCrimson else TextMuted.copy(alpha = 0.3f),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable { selectedFilter = "MISSED" }
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "MISSED / UNANSWERED ($missedCount)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (selectedFilter == "MISSED") DuressCrimson else TextMuted
+                            )
+                        }
+                    }
+
+                    if (filteredLogs.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(top = 40.dp),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            Text(
+                                text = if (selectedFilter == "MISSED") "No missed or declined calls" else "No calls found",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextMuted
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(filteredLogs, key = { it.callId }) { log ->
+                                val formattedName = viewModel.getFormattedDisplayName(log.peerUsername)
+                                CallLogRow(
+                                    log = log,
+                                    displayName = formattedName,
+                                    onVoiceClick = {
+                                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                            viewModel.startVoiceCall(log.peerUsername, log.peerAddress.ifBlank { log.peerUsername })
+                                        } else {
+                                            pendingCallTarget = Pair(log.peerUsername, false)
+                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    },
+                                    onVideoClick = {
+                                        val hasAudio = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                        val hasCam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                                        if (hasAudio && hasCam) {
+                                            viewModel.startVideoCall(log.peerUsername, log.peerAddress.ifBlank { log.peerUsername })
+                                        } else {
+                                            pendingCallTarget = Pair(log.peerUsername, true)
+                                            videoPermissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selectedLogToDelete = log
+                                    }
+                                )
                             }
-                        )
+                        }
                     }
                 }
             }
@@ -310,32 +409,66 @@ private fun CallLogRow(
     onVideoClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    val isMissed = log.direction == "MISSED" || log.status == "MISSED" || log.status == "REJECTED"
-    val isIncoming = log.direction == "INCOMING"
-    val isOutgoing = log.direction == "OUTGOING"
-    val isVideo = log.callType == "VIDEO"
+    val isVideo = log.callType.equals("VIDEO", ignoreCase = true)
+    val isOutgoing = log.direction.equals("OUTGOING", ignoreCase = true)
+
+    val rawStatus = log.status.uppercase()
+    val isMissed = log.direction.equals("MISSED", ignoreCase = true) || rawStatus == "MISSED"
+    val isDeclined = rawStatus == "DECLINED" || rawStatus == "REJECTED" || log.status.contains("Declined", ignoreCase = true)
+    val isNotAnswered = rawStatus == "NOT_ANSWERED" || rawStatus == "CANCELLED" || log.status.contains("Cancelled", ignoreCase = true)
+    val isNotConnected = rawStatus == "NOT_CONNECTED" || rawStatus == "FAILED" || rawStatus == "BLOCKED"
+    val isCompleted = log.durationSeconds > 0 || rawStatus == "COMPLETED"
+
+    val dirIcon = when {
+        isMissed -> Icons.AutoMirrored.Filled.CallMissed
+        isDeclined && !isOutgoing -> Icons.AutoMirrored.Filled.CallMissed
+        isOutgoing -> Icons.AutoMirrored.Filled.CallMade
+        else -> Icons.AutoMirrored.Filled.CallReceived
+    }
+    val dirColor = when {
+        isMissed -> DuressCrimson
+        isDeclined -> Color(0xFFFF9100) // Amber / Orange
+        isNotConnected -> DuressCrimson
+        isNotAnswered -> Color(0xFFF59E0B) // Amber
+        isOutgoing -> NeonCyan
+        else -> NeonGreen
+    }
+
+    val directionLabel = if (isOutgoing) "Outgoing" else "Incoming"
+
+    val (statusLabel, statusColor) = when {
+        isCompleted -> Pair("Completed", NeonGreen)
+        isMissed -> Pair("Missed Call", DuressCrimson)
+        isDeclined -> Pair("Call Declined", Color(0xFFFF9100))
+        isNotAnswered -> Pair("Not Answered", Color(0xFFF59E0B))
+        isNotConnected -> Pair("Not Connected", DuressCrimson)
+        else -> Pair(log.status.ifBlank { "Completed" }, NeonCyan)
+    }
+
+    val durationText = remember(log.durationSeconds) {
+        if (log.durationSeconds > 0) {
+            val hours = log.durationSeconds / 3600
+            val minutes = (log.durationSeconds % 3600) / 60
+            val seconds = log.durationSeconds % 60
+            when {
+                hours > 0 -> String.format(Locale.US, "%dh %dm %ds", hours, minutes, seconds)
+                minutes > 0 -> String.format(Locale.US, "%dm %02ds", minutes, seconds)
+                else -> String.format(Locale.US, "%ds", seconds)
+            }
+        } else {
+            null
+        }
+    }
 
     val timeFormatted = remember(log.timestamp) {
         val date = Date(log.timestamp)
         val now = System.currentTimeMillis()
         val diffDays = (now - log.timestamp) / (1000 * 60 * 60 * 24)
+        val timePart = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(date)
         when {
-            diffDays == 0L -> "Today, " + SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
-            diffDays == 1L -> "Yesterday, " + SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
-            else -> SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(date)
-        }
-    }
-
-    val durationText = remember(log.durationSeconds, isMissed, log.status) {
-        when {
-            isMissed -> if (log.status == "REJECTED") "Declined" else "Missed"
-            log.durationSeconds > 0 -> {
-                val mins = log.durationSeconds / 60
-                val secs = log.durationSeconds % 60
-                String.format(Locale.US, "%02d:%02d", mins, secs)
-            }
-            log.status == "CANCELLED" -> "Cancelled"
-            else -> "Completed"
+            diffDays == 0L -> "Today, $timePart"
+            diffDays == 1L -> "Yesterday, $timePart"
+            else -> SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(date)
         }
     }
 
@@ -346,71 +479,118 @@ private fun CallLogRow(
                 onClick = onVoiceClick,
                 onLongClick = onLongClick
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Avatar circle
+        // 1. Avatar circle with call type icon
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(46.dp)
                 .clip(CircleShape)
                 .background(DarkCard)
-                .border(1.dp, if (isMissed) DuressCrimson.copy(alpha = 0.5f) else NeonCyan.copy(alpha = 0.3f), CircleShape),
+                .border(
+                    width = 1.dp,
+                    color = when {
+                        isMissed -> DuressCrimson.copy(alpha = 0.6f)
+                        isDeclined -> Color(0xFFFF9100).copy(alpha = 0.6f)
+                        isNotAnswered || isNotConnected -> TextMuted.copy(alpha = 0.5f)
+                        isVideo -> NeonCyan.copy(alpha = 0.4f)
+                        else -> NeonGreen.copy(alpha = 0.4f)
+                    },
+                    shape = CircleShape
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = if (isVideo) Icons.Default.Videocam else Icons.Default.Phone,
-                contentDescription = null,
-                tint = if (isMissed) DuressCrimson else NeonCyan,
+                contentDescription = if (isVideo) "Video Call" else "Audio Call",
+                tint = when {
+                    isMissed -> DuressCrimson
+                    isDeclined -> Color(0xFFFF9100)
+                    isNotAnswered || isNotConnected -> TextMuted
+                    isVideo -> NeonCyan
+                    else -> NeonGreen
+                },
                 modifier = Modifier.size(22.dp)
             )
         }
 
         Spacer(modifier = Modifier.width(14.dp))
 
+        // 2. Info column
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = displayName,
-                style = MaterialTheme.typography.titleMedium,
-                color = if (isMissed) DuressCrimson else TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.SemiBold
-            )
+            // Row 1: Contact Display Name + Call Type Chip
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (isMissed) DuressCrimson else TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Call Type Pill (AUDIO / VIDEO)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (isVideo) NeonCyan.copy(alpha = 0.12f) else NeonGreen.copy(alpha = 0.12f))
+                        .border(
+                            0.5.dp,
+                            if (isVideo) NeonCyan.copy(alpha = 0.35f) else NeonGreen.copy(alpha = 0.35f),
+                            RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (isVideo) Icons.Default.Videocam else Icons.Default.Phone,
+                            contentDescription = null,
+                            tint = if (isVideo) NeonCyan else NeonGreen,
+                            modifier = Modifier.size(10.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = if (isVideo) "VIDEO" else "AUDIO",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (isVideo) NeonCyan else NeonGreen
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(3.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Direction icon
-                val dirIcon = when {
-                    isMissed -> Icons.AutoMirrored.Filled.CallMissed
-                    isIncoming -> Icons.AutoMirrored.Filled.CallReceived
-                    else -> Icons.AutoMirrored.Filled.CallMade
-                }
-                val dirColor = when {
-                    isMissed -> DuressCrimson
-                    isIncoming -> NeonGreen
-                    else -> NeonCyan
-                }
-
+            // Row 2: Direction Icon + Direction Label + Status Badge + Duration
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Icon(
                     imageVector = dirIcon,
                     contentDescription = null,
                     tint = dirColor,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(13.dp)
                 )
 
                 Spacer(modifier = Modifier.width(4.dp))
 
                 Text(
-                    text = durationText,
+                    text = directionLabel,
                     fontSize = 11.sp,
-                    color = dirColor,
-                    fontFamily = FontFamily.Monospace,
+                    color = TextSecondary,
                     fontWeight = FontWeight.Medium
                 )
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
                 Text(
                     text = "•",
@@ -418,7 +598,49 @@ private fun CallLogRow(
                     color = TextMuted
                 )
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+
+                Text(
+                    text = statusLabel,
+                    fontSize = 11.sp,
+                    color = statusColor,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                if (durationText != null) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "•",
+                        fontSize = 11.sp,
+                        color = TextMuted
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = durationText,
+                        fontSize = 11.sp,
+                        color = NeonCyan,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(2.dp))
+
+            // Row 3: Time of calling with clock icon
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Schedule,
+                    contentDescription = null,
+                    tint = TextMuted,
+                    modifier = Modifier.size(11.dp)
+                )
+
+                Spacer(modifier = Modifier.width(4.dp))
 
                 Text(
                     text = timeFormatted,
@@ -428,28 +650,30 @@ private fun CallLogRow(
             }
         }
 
-        // Quick Call back icon buttons
+        Spacer(modifier = Modifier.width(6.dp))
+
+        // 3. Quick Call Back buttons
         IconButton(
             onClick = onVoiceClick,
-            modifier = Modifier.size(38.dp)
+            modifier = Modifier.size(36.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Phone,
                 contentDescription = "Voice Call",
                 tint = NeonCyan,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(19.dp)
             )
         }
 
         IconButton(
             onClick = onVideoClick,
-            modifier = Modifier.size(38.dp)
+            modifier = Modifier.size(36.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Videocam,
                 contentDescription = "Video Call",
                 tint = NeonCyan,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(21.dp)
             )
         }
     }
