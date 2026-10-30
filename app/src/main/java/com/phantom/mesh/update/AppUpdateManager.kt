@@ -179,6 +179,9 @@ class AppUpdateManager @Inject constructor(
      * Downloads the APK file from GitHub with redirect handling and live progress tracking.
      */
     suspend fun downloadUpdate(release: ReleaseInfo): File = withContext(Dispatchers.IO) {
+        // Clean up any stale APKs before starting a new download
+        cleanDownloadedApkFiles()
+
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val cleanTag = release.tagName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val destinationFile = File(updatesDir, "PhantomMesh_${cleanTag}.apk")
@@ -340,6 +343,10 @@ class AppUpdateManager @Inject constructor(
         if (lastSeen != current) {
             // Version changed -> User successfully installed the new APK!
             sessionManager.setLastSeenAppVersion(current)
+
+            // Automatically purge the downloaded installer APK to save device storage space
+            cleanDownloadedApkFiles()
+
             val savedTitle = sessionManager.getLastSavedReleaseTitle() ?: "PhantomMesh v$current"
             val savedNotes = sessionManager.getLastSavedReleaseNotes()
                 ?: "Welcome to the latest version of PhantomMesh with enhanced security, peer mesh resilience, and performance optimizations."
@@ -351,6 +358,27 @@ class AppUpdateManager @Inject constructor(
         }
 
         return null
+    }
+
+    /**
+     * Deletes all downloaded installer APK files from the app's cache directory
+     * to save device storage space after installation or prior to a fresh download.
+     */
+    fun cleanDownloadedApkFiles() {
+        try {
+            val updatesDir = File(context.cacheDir, "updates")
+            if (updatesDir.exists() && updatesDir.isDirectory) {
+                val files = updatesDir.listFiles()
+                files?.forEach { file ->
+                    if (file.name.endsWith(".apk", ignoreCase = true)) {
+                        val deleted = file.delete()
+                        android.util.Log.d(TAG, "Deleted downloaded APK: ${file.name}, success=$deleted")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Failed to clean update APK files: ${e.message}")
+        }
     }
 
     /**

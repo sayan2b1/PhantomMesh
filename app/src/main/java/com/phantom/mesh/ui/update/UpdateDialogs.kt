@@ -1,5 +1,7 @@
 package com.phantom.mesh.ui.update
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -24,6 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Celebration
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
@@ -49,8 +52,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
@@ -87,6 +92,7 @@ fun UpdateAvailableDialog(
     val isDownloading = downloadState is DownloadState.Downloading
     val isReady = downloadState is DownloadState.ReadyToInstall
     val hasError = downloadState is DownloadState.Error
+    val context = LocalContext.current
 
     AlertDialog(
         onDismissRequest = {
@@ -224,19 +230,53 @@ fun UpdateAvailableDialog(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 180.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .heightIn(max = 280.dp)
+                                .clip(RoundedCornerShape(10.dp))
                                 .background(DarkBackground)
-                                .border(1.dp, DarkSurfaceVariant, RoundedCornerShape(8.dp))
-                                .padding(10.dp)
+                                .border(1.dp, NeonCyan.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                                .padding(12.dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             Text(
                                 text = release.body.ifBlank { "Performance updates, bug fixes, and security enhancements." },
-                                color = TextSecondary,
-                                fontSize = 12.sp,
-                                lineHeight = 17.sp,
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
                                 fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // GitHub Repository & Release Verification Link
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/sayan2b1/PhantomMesh"))
+                                        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {}
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                tint = NeonCyan,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Verify source code & releases on GitHub",
+                                color = NeonCyan,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                textDecoration = TextDecoration.Underline
                             )
                         }
                     }
@@ -432,6 +472,7 @@ fun PostInstallWelcomeDialog(
     info: PostInstallInfo,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DarkSurface,
@@ -512,19 +553,53 @@ fun PostInstallWelcomeDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 240.dp)
+                        .heightIn(max = 340.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(DarkBackground)
-                        .border(1.dp, DarkSurfaceVariant, RoundedCornerShape(10.dp))
-                        .padding(12.dp)
+                        .border(1.dp, NeonGreen.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+                        .padding(14.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
                     Text(
                         text = info.changelog.ifBlank { "Welcome to PhantomMesh v${info.currentVersion}! This release includes stability enhancements and security updates." },
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
                         fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // GitHub Repository Link
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/sayan2b1/PhantomMesh"))
+                                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "github.com/sayan2b1/PhantomMesh",
+                        color = NeonCyan,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        textDecoration = TextDecoration.Underline
                     )
                 }
             }
@@ -563,6 +638,7 @@ fun ChangelogViewerDialog(
     changelogText: String,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DarkSurface,
@@ -587,23 +663,59 @@ fun ChangelogViewerDialog(
             }
         },
         text = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 280.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(DarkBackground)
-                    .border(1.dp, DarkSurfaceVariant, RoundedCornerShape(10.dp))
-                    .padding(12.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    text = changelogText,
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                    fontFamily = FontFamily.Monospace
-                )
+            Column {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DarkBackground)
+                        .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+                        .padding(14.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = changelogText,
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // GitHub Repository Link
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/sayan2b1/PhantomMesh"))
+                                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "github.com/sayan2b1/PhantomMesh",
+                        color = NeonCyan,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        textDecoration = TextDecoration.Underline
+                    )
+                }
             }
         },
         confirmButton = {
