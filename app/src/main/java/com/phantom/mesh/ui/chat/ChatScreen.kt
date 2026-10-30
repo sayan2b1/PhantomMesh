@@ -230,6 +230,7 @@ fun ChatScreen(
     }
 
     val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsState()
+    val conversationMode by viewModel.conversationMode.collectAsState()
     val unreadMessageIds by viewModel.unreadMessageIds.collectAsState()
     val peerTypingState by viewModel.peerTypingState.collectAsState()
     val senderBubbleColorHex by viewModel.senderBubbleColor.collectAsState()
@@ -519,7 +520,11 @@ fun ChatScreen(
                             )
                         }
                         Text(
-                            text = "E2E Hybrid Encrypted Channel",
+                            text = when (conversationMode) {
+                                com.phantom.mesh.model.ConversationMode.OFFLINE -> "E2E Offline Mesh Channel"
+                                com.phantom.mesh.model.ConversationMode.ONLINE -> "E2E Cloud Encrypted Channel"
+                                com.phantom.mesh.model.ConversationMode.HYBRID -> "E2E Hybrid Encrypted Channel"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = TextMuted
                         )

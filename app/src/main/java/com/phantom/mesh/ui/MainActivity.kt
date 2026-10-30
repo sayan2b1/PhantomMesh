@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.navigation.compose.rememberNavController
 import com.google.firebase.auth.FirebaseAuth
 import com.phantom.mesh.data.local.preferences.SessionManager
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.data.worker.DropZoneTtlWorker
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshNetworkService
@@ -78,13 +79,17 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
         if (canStartForegroundMeshService()) {
-            startMeshService()
+            if (sessionManager.getConversationMode() != ConversationMode.ONLINE) {
+                startMeshService()
+            }
             if (sessionManager.isSessionValid()) {
                 val userId = sessionManager.getUserId()
                 val username = sessionManager.getUsername() ?: "Anonymous"
                 if (userId != null) {
                     meshConnectionManager.setLocalIdentity(userId, username)
-                    meshConnectionManager.startMesh()
+                    if (sessionManager.getConversationMode() != ConversationMode.ONLINE) {
+                        meshConnectionManager.startMesh()
+                    }
                 }
             }
         } else {
@@ -152,9 +157,13 @@ class MainActivity : ComponentActivity() {
             val username = sessionManager.getUsername() ?: "Anonymous"
             if (userId != null) {
                 meshConnectionManager.setLocalIdentity(userId, username)
-                chatRepository.startCloudListener(userId, username)
-                callManager.startCloudCallListener(username)
-                meshConnectionManager.startMesh()
+                if (sessionManager.getConversationMode() != ConversationMode.OFFLINE) {
+                    chatRepository.startCloudListener(userId, username)
+                    callManager.startCloudCallListener(username)
+                }
+                if (sessionManager.getConversationMode() != ConversationMode.ONLINE) {
+                    meshConnectionManager.startMesh()
+                }
             }
 
             // Silently refresh / ensure Firebase Auth has an active session in background
@@ -302,7 +311,9 @@ class MainActivity : ComponentActivity() {
             val username = sessionManager.getUsername() ?: "Anonymous"
             if (userId != null) {
                 meshConnectionManager.setLocalIdentity(userId, username)
-                meshConnectionManager.startMesh()
+                if (sessionManager.getConversationMode() != ConversationMode.ONLINE) {
+                    meshConnectionManager.startMesh()
+                }
             }
         }
     }

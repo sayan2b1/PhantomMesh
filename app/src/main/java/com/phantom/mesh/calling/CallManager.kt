@@ -17,6 +17,7 @@ import com.phantom.mesh.calling.webrtc.WebRtcSignalingManager
 import com.phantom.mesh.data.local.dao.CallLogDao
 import com.phantom.mesh.data.local.entity.CallLogEntity
 import com.phantom.mesh.data.local.preferences.SessionManager
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshPacket
 import com.phantom.mesh.network.LocalNetworkDetector
@@ -149,27 +150,48 @@ class CallManager @Inject constructor(
             }
         }
 
-        // 2. Start cloud signaling listener whenever session is valid or identity updates
+        // 2. Start cloud signaling listener whenever session is valid or identity updates (suppressed in OFFLINE mode)
+        scope.launch {
+            sessionManager.conversationModeFlow.collect { mode ->
+                if (mode == ConversationMode.OFFLINE) {
+                    stopCloudCallListener()
+                } else {
+                    val username = sessionManager.getUsername()
+                    if (!username.isNullOrBlank()) {
+                        startCloudCallListener(username)
+                    }
+                }
+            }
+        }
         scope.launch {
             sessionManager.usernameFlow.collect { username ->
-                if (!username.isNullOrBlank()) {
+                if (!username.isNullOrBlank() && sessionManager.getConversationMode() != ConversationMode.OFFLINE) {
                     startCloudCallListener(username)
                 }
             }
         }
         scope.launch {
             sessionManager.userIdFlow.collect { userId ->
-                if (!userId.isNullOrBlank()) {
+                if (!userId.isNullOrBlank() && sessionManager.getConversationMode() != ConversationMode.OFFLINE) {
                     startCloudCallListener()
                 }
             }
         }
     }
 
+    fun stopCloudCallListener() {
+        incomingCallListeners.forEach { it.remove() }
+        incomingCallListeners.clear()
+    }
+
     /**
      * Starts listening for incoming call documents in Firestore across username and userId.
      */
     fun startCloudCallListener(username: String? = null) {
+        if (sessionManager.getConversationMode() == ConversationMode.OFFLINE) {
+            android.util.Log.i(TAG, "Offline mode active — cloud call listener suppressed")
+            return
+        }
         val myUsername = (username ?: sessionManager.getUsername() ?: "").trim().lowercase().removePrefix("@")
         val myUserId = (sessionManager.getUserId() ?: "").trim().lowercase()
 
@@ -329,7 +351,12 @@ class CallManager @Inject constructor(
         myNetworkProfile = LocalNetworkDetector.getCurrentProfile(context)
 
         val callId = UUID.randomUUID().toString()
-        val initialMode = if (networkStateManager.isInternetAvailable.value) CallTransportMode.CLOUD_RELAY else CallTransportMode.BLUETOOTH_MESH
+        val convMode = sessionManager.getConversationMode()
+        val initialMode = when (convMode) {
+            ConversationMode.OFFLINE -> CallTransportMode.BLUETOOTH_MESH
+            ConversationMode.ONLINE -> CallTransportMode.CLOUD_RELAY
+            ConversationMode.HYBRID -> if (networkStateManager.isInternetAvailable.value) CallTransportMode.CLOUD_RELAY else CallTransportMode.BLUETOOTH_MESH
+        }
 
         val call = ActiveCall(
             callId = callId,
@@ -606,8 +633,9 @@ class CallManager @Inject constructor(
             lanVoipEngine?.start(peerIp = peerNet.localIp)
         }
 
-        // 2. Start Cloud Media Listener whenever internet is available (delivers Cloud Relay video frames & fallback audio)
-        if (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY) {
+        // 2. Start Cloud Media Listener whenever internet is available and not in OFFLINE mode
+        val convMode = sessionManager.getConversationMode()
+        if (convMode != ConversationMode.OFFLINE && (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY)) {
             startCloudMediaListener(current)
         }
 
@@ -633,14 +661,15 @@ class CallManager @Inject constructor(
                 lanVoipEngine?.sendAudio(pcmChunk)
 
                 // 2. Cloud Relay (Dedicated low-latency audio stream via G.711 mu-law)
-                if (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY) {
+                val currentConvMode = sessionManager.getConversationMode()
+                if (currentConvMode != ConversationMode.OFFLINE && (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY)) {
                     val muLaw = AudioVoipEngine.G711.linearToMuLaw(pcmChunk)
                     val b64 = Base64.encodeToString(muLaw, Base64.NO_WRAP)
                     sendCloudAudio(call.callId, myRole, b64)
                 }
 
                 // 3. Bluetooth Mesh P2P
-                if (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers()) {
+                if (currentConvMode != ConversationMode.ONLINE && (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers())) {
                     try {
                         val b64 = Base64.encodeToString(pcmChunk, Base64.NO_WRAP)
                         val packet = MeshPacket(
@@ -680,14 +709,15 @@ class CallManager @Inject constructor(
                 // 1. LAN Direct P2P if active
                 lanVoipEngine?.sendVideo(jpegBytes)
 
-                // 2. Cloud Relay whenever internet is available
-                if (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY) {
+                // 2. Cloud Relay whenever internet is available and not in OFFLINE mode
+                val currentConvMode = sessionManager.getConversationMode()
+                if (currentConvMode != ConversationMode.OFFLINE && (networkStateManager.isInternetAvailable.value || mode == CallTransportMode.CLOUD_RELAY)) {
                     val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
                     sendCloudVideo(call.callId, myRole, b64)
                 }
 
-                // 3. Bluetooth Mesh P2P if peers connected
-                if (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers()) {
+                // 3. Bluetooth Mesh P2P if peers connected (suppressed in ONLINE mode)
+                if (currentConvMode != ConversationMode.ONLINE && (mode == CallTransportMode.BLUETOOTH_MESH || meshConnectionManagerProvider.get().hasActivePeers())) {
                     try {
                         val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
                         val packet = MeshPacket(

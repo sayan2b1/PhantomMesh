@@ -3,6 +3,7 @@ package com.phantom.mesh.data.local.preferences
 import android.content.Context
 import android.content.SharedPreferences
 import com.google.firebase.auth.FirebaseAuth
+import com.phantom.mesh.model.ConversationMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,7 @@ class SessionManager @Inject constructor(
         private const val KEY_IS_LOGGED_IN = "session_is_logged_in"
         private const val KEY_LOGIN_TIMESTAMP = "session_login_timestamp"
         private const val KEY_BLUETOOTH_ONLY_MODE = "session_prefer_bluetooth_only"
+        private const val KEY_CONVERSATION_MODE = "session_conversation_mode"
         private const val KEY_CHAT_WALLPAPER_PATH = "session_chat_wallpaper_path"
         private const val KEY_AUTO_BACKUP_FREQUENCY = "session_auto_backup_frequency"
         private const val KEY_LAST_BACKUP_TIMESTAMP = "session_last_backup_timestamp"
@@ -63,6 +65,11 @@ class SessionManager @Inject constructor(
 
     private val _bluetoothOnlyModeFlow = MutableStateFlow(prefs.getBoolean(KEY_BLUETOOTH_ONLY_MODE, false))
     val bluetoothOnlyModeFlow: StateFlow<Boolean> = _bluetoothOnlyModeFlow.asStateFlow()
+
+    private val _conversationModeFlow = MutableStateFlow(
+        ConversationMode.fromString(prefs.getString(KEY_CONVERSATION_MODE, ConversationMode.HYBRID.name))
+    )
+    val conversationModeFlow: StateFlow<ConversationMode> = _conversationModeFlow.asStateFlow()
 
     private val _chatWallpaperFlow = MutableStateFlow(prefs.getString(KEY_CHAT_WALLPAPER_PATH, null))
     val chatWallpaperFlow: StateFlow<String?> = _chatWallpaperFlow.asStateFlow()
@@ -137,11 +144,24 @@ class SessionManager @Inject constructor(
         return if (token.isNullOrBlank()) null else token
     }
     fun isDuress(): Boolean = prefs.getBoolean(KEY_IS_DURESS, false)
-    fun isBluetoothOnlyMode(): Boolean = prefs.getBoolean(KEY_BLUETOOTH_ONLY_MODE, false)
+
+    fun getConversationMode(): ConversationMode {
+        return ConversationMode.fromString(prefs.getString(KEY_CONVERSATION_MODE, ConversationMode.HYBRID.name))
+    }
+
+    fun setConversationMode(mode: ConversationMode) {
+        prefs.edit()
+            .putString(KEY_CONVERSATION_MODE, mode.name)
+            .putBoolean(KEY_BLUETOOTH_ONLY_MODE, mode == ConversationMode.OFFLINE)
+            .commit()
+        _conversationModeFlow.value = mode
+        _bluetoothOnlyModeFlow.value = (mode == ConversationMode.OFFLINE)
+    }
+
+    fun isBluetoothOnlyMode(): Boolean = getConversationMode() == ConversationMode.OFFLINE
 
     fun setBluetoothOnlyMode(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_BLUETOOTH_ONLY_MODE, enabled).commit()
-        _bluetoothOnlyModeFlow.value = enabled
+        setConversationMode(if (enabled) ConversationMode.OFFLINE else ConversationMode.HYBRID)
     }
 
     fun getChatWallpaperPath(): String? = prefs.getString(KEY_CHAT_WALLPAPER_PATH, null)

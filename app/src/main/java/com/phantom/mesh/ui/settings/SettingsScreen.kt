@@ -59,6 +59,12 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.SwapCalls
+import androidx.compose.material.icons.filled.Tune
+import com.phantom.mesh.model.ConversationMode
+import com.phantom.mesh.util.HardwareStateUtil
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -113,6 +119,8 @@ import com.phantom.mesh.ui.theme.NeonGreen
 import com.phantom.mesh.ui.theme.TextMuted
 import com.phantom.mesh.ui.theme.TextPrimary
 import com.phantom.mesh.ui.theme.TextSecondary
+import com.phantom.mesh.ui.theme.TransportBluetooth
+import com.phantom.mesh.ui.theme.TransportCloud
 import com.phantom.mesh.ui.theme.WarningAmber
 import java.io.File
 import java.text.SimpleDateFormat
@@ -138,6 +146,7 @@ fun SettingsScreen(
     val username by viewModel.username.collectAsState()
     val isDuress by viewModel.isDuress.collectAsState()
     val isBluetoothOnlyMode by viewModel.isBluetoothOnlyMode.collectAsState()
+    val conversationMode by viewModel.conversationMode.collectAsState()
     val chatWallpaperPath by viewModel.chatWallpaperPath.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
     val isChangingUsername by viewModel.isChangingUsername.collectAsState()
@@ -277,6 +286,7 @@ fun SettingsScreen(
                             username = username,
                             isDuress = isDuress,
                             isBluetoothOnlyMode = isBluetoothOnlyMode,
+                            conversationMode = conversationMode,
                             chatWallpaperPath = chatWallpaperPath,
                             lastBackupTimestamp = lastBackupTimestamp,
                             lastBackupMessageCount = lastBackupMessageCount,
@@ -284,6 +294,7 @@ fun SettingsScreen(
                             preferredRefreshRate = preferredRefreshRate,
                             onToggleReadReceipts = { viewModel.setReadReceiptsEnabled(it) },
                             onToggleBluetoothOnly = { viewModel.setBluetoothOnlyMode(it) },
+                            onSelectConversationMode = { viewModel.setConversationMode(it) },
                             onNavigate = { currentSubPage = it },
                             onLogoutClick = { showLogoutDialog = true },
                             onForgotPasswordClick = { showForgotPasswordDialog = true }
@@ -588,6 +599,7 @@ private fun SettingsMainContent(
     username: String?,
     isDuress: Boolean,
     isBluetoothOnlyMode: Boolean,
+    conversationMode: ConversationMode,
     chatWallpaperPath: String?,
     lastBackupTimestamp: Long,
     lastBackupMessageCount: Int,
@@ -595,6 +607,7 @@ private fun SettingsMainContent(
     preferredRefreshRate: Int,
     onToggleReadReceipts: (Boolean) -> Unit,
     onToggleBluetoothOnly: (Boolean) -> Unit,
+    onSelectConversationMode: (ConversationMode) -> Unit,
     onNavigate: (SettingsSubPage) -> Unit,
     onLogoutClick: () -> Unit,
     onForgotPasswordClick: () -> Unit
@@ -811,12 +824,16 @@ private fun SettingsMainContent(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        var showConversationModeMenu by remember { mutableStateOf(false) }
+        val context = LocalContext.current
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(DarkCard)
-                .border(1.dp, NeonCyan.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+                .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                .clickable { showConversationModeMenu = true }
                 .padding(14.dp)
         ) {
             Row(
@@ -830,43 +847,134 @@ private fun SettingsMainContent(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(38.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(NeonCyan.copy(alpha = 0.12f)),
+                            .background(
+                                when (conversationMode) {
+                                    ConversationMode.HYBRID -> NeonCyan.copy(alpha = 0.15f)
+                                    ConversationMode.ONLINE -> TransportCloud.copy(alpha = 0.15f)
+                                    ConversationMode.OFFLINE -> TransportBluetooth.copy(alpha = 0.15f)
+                                }
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Bluetooth,
+                            imageVector = when (conversationMode) {
+                                ConversationMode.HYBRID -> Icons.Default.SwapCalls
+                                ConversationMode.ONLINE -> Icons.Default.Cloud
+                                ConversationMode.OFFLINE -> Icons.Default.Bluetooth
+                            },
                             contentDescription = null,
-                            tint = NeonCyan,
+                            tint = when (conversationMode) {
+                                ConversationMode.HYBRID -> NeonCyan
+                                ConversationMode.ONLINE -> TransportCloud
+                                ConversationMode.OFFLINE -> TransportBluetooth
+                            },
                             modifier = Modifier.size(20.dp)
                         )
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "Bluetooth-Only Mode",
+                            text = "Select conversation mode",
                             style = MaterialTheme.typography.titleSmall,
-                            color = TextPrimary
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold
                         )
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (isBluetoothOnlyMode) "Wi-Fi upgrades blocked (stealth)" else "Adaptive: BLE + Wi-Fi Direct",
+                            text = conversationMode.title,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (isBluetoothOnlyMode) WarningAmber else TextSecondary
+                            color = when (conversationMode) {
+                                ConversationMode.HYBRID -> NeonCyan
+                                ConversationMode.ONLINE -> TransportCloud
+                                ConversationMode.OFFLINE -> WarningAmber
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
 
-                Switch(
-                    checked = isBluetoothOnlyMode,
-                    onCheckedChange = onToggleBluetoothOnly,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = NeonCyan,
-                        checkedTrackColor = NeonCyan.copy(alpha = 0.3f),
-                        uncheckedThumbColor = TextMuted,
-                        uncheckedTrackColor = DarkSurfaceVariant
+                // Dropdown indicator button
+                IconButton(onClick = { showConversationModeMenu = true }) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = "Select conversation mode dropdown",
+                        tint = NeonCyan,
+                        modifier = Modifier.size(28.dp)
                     )
-                )
+                }
+
+                DropdownMenu(
+                    expanded = showConversationModeMenu,
+                    onDismissRequest = { showConversationModeMenu = false },
+                    modifier = Modifier
+                        .background(DarkCard)
+                        .border(1.dp, NeonCyan.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                ) {
+                    ConversationMode.values().forEach { mode ->
+                        val isSelected = (mode == conversationMode)
+                        DropdownMenuItem(
+                            text = {
+                                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = mode.title,
+                                            color = if (isSelected) NeonCyan else TextPrimary,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 13.sp
+                                        )
+                                        if (isSelected) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Selected",
+                                                tint = NeonCyan,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = mode.description,
+                                        color = TextMuted,
+                                        fontSize = 10.sp,
+                                        lineHeight = 13.sp
+                                    )
+                                }
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = when (mode) {
+                                        ConversationMode.HYBRID -> Icons.Default.SwapCalls
+                                        ConversationMode.ONLINE -> Icons.Default.Cloud
+                                        ConversationMode.OFFLINE -> Icons.Default.Bluetooth
+                                    },
+                                    contentDescription = null,
+                                    tint = if (isSelected) NeonCyan else TextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showConversationModeMenu = false
+                                onSelectConversationMode(mode)
+                                if (mode == ConversationMode.OFFLINE) {
+                                    val bt = HardwareStateUtil.isBluetoothEnabled(context)
+                                    val wifi = HardwareStateUtil.isWifiEnabled(context)
+                                    val loc = HardwareStateUtil.isLocationEnabled(context)
+                                    if (!bt || !wifi || !loc) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Offline Mode active: Bluetooth, Wi-Fi & Location are strictly required!",
+                                            android.widget.Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
             }
         }
 

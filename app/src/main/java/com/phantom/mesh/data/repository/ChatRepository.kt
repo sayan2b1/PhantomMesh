@@ -12,6 +12,7 @@ import com.phantom.mesh.data.local.dao.MessageDao
 import com.phantom.mesh.data.local.entity.ChatEntity
 import com.phantom.mesh.data.local.entity.MessageEntity
 import com.phantom.mesh.data.local.preferences.SessionManager
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.mesh.MeshConnectionManager
 import com.phantom.mesh.mesh.MeshPacket
 import com.phantom.mesh.mesh.MeshRoutingTable
@@ -84,13 +85,20 @@ class ChatRepository @Inject constructor(
             }
         }
 
-        // Auto-start cloud listener if we already have a valid session
+        // Auto-start or stop cloud listener based on session and conversation mode
         scope.launch {
-            val userId = sessionManager.getUserId()
-            val username = sessionManager.getUsername()
-            if (userId != null && sessionManager.isSessionValid()) {
-                android.util.Log.i("ChatRepository", "Auto-starting cloud listener from init (session valid)")
-                startCloudListener(userId, username)
+            sessionManager.conversationModeFlow.collect { mode ->
+                if (mode == ConversationMode.OFFLINE) {
+                    android.util.Log.i("ChatRepository", "Mode changed to OFFLINE: stopping cloud listener")
+                    stopCloudListener()
+                } else {
+                    val userId = sessionManager.getUserId()
+                    val username = sessionManager.getUsername()
+                    if (userId != null && sessionManager.isSessionValid()) {
+                        android.util.Log.i("ChatRepository", "Mode is $mode: starting cloud listener")
+                        startCloudListener(userId, username)
+                    }
+                }
             }
         }
     }
@@ -462,11 +470,16 @@ class ChatRepository @Inject constructor(
         val currentUserId = sessionManager.getUserId() ?: "anon_sender"
         val messageId = "msg_${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
-        val isOnline = networkStateManager.isInternetAvailable.value
+        val convMode = sessionManager.getConversationMode()
+        val effectiveTransport = when (convMode) {
+            ConversationMode.OFFLINE -> "mesh"
+            ConversationMode.ONLINE -> "cloud"
+            ConversationMode.HYBRID -> if (networkStateManager.isInternetAvailable.value) "cloud" else "mesh"
+        }
 
         // Step 1: Ensure parent chat entry exists in Room
         try {
-            ensureChatExists(chatId, targetId, content, now, if (isOnline) "cloud" else "mesh")
+            ensureChatExists(chatId, targetId, content, now, effectiveTransport)
         } catch (e: Exception) {
             android.util.Log.e("ChatRepository", "Failed to ensureChatExists: ${e.message}", e)
         }
@@ -481,7 +494,7 @@ class ChatRepository @Inject constructor(
             dataType = "text",
             deliveryStatus = "saved",
             hopCount = 0,
-            transportUsed = if (isOnline) "cloud" else "mesh",
+            transportUsed = effectiveTransport,
             timestamp = now,
             replyToMessageId = replyToMessageId,
             replyToContent = replyToContent,
@@ -493,18 +506,36 @@ class ChatRepository @Inject constructor(
             android.util.Log.e("ChatRepository", "Failed to insert message into Room: ${e.message}", e)
         }
 
-        // Step 3: Route through active network layer (Dual-Network Router)
+        // Step 3: Route through active network layer based on ConversationMode
         try {
-            // Transmit via mesh FIRST (0ms local Bluetooth/Wi-Fi Direct dispatch)
-            if (!isOnline || meshConnectionManager.hasActivePeers()) {
-                routeViaMesh(message)
-            }
-            if (isOnline) {
-                scope.launch {
-                    try {
-                        routeViaCloud(message)
-                    } catch (e: Exception) {
-                        android.util.Log.e("ChatRepository", "Async cloud routing error: ${e.message}")
+            when (convMode) {
+                ConversationMode.OFFLINE -> {
+                    // Strictly offline: NO cloud usage, strictly mesh
+                    routeViaMesh(message)
+                }
+                ConversationMode.ONLINE -> {
+                    // Strictly online: NO mesh routing, strictly cloud
+                    scope.launch {
+                        try {
+                            routeViaCloud(message)
+                        } catch (e: Exception) {
+                            android.util.Log.e("ChatRepository", "Async cloud routing error: ${e.message}")
+                        }
+                    }
+                }
+                ConversationMode.HYBRID -> {
+                    // Dual-Network Router
+                    if (!networkStateManager.isInternetAvailable.value || meshConnectionManager.hasActivePeers()) {
+                        routeViaMesh(message)
+                    }
+                    if (networkStateManager.isInternetAvailable.value) {
+                        scope.launch {
+                            try {
+                                routeViaCloud(message)
+                            } catch (e: Exception) {
+                                android.util.Log.e("ChatRepository", "Async cloud routing error: ${e.message}")
+                            }
+                        }
                     }
                 }
             }
@@ -531,7 +562,13 @@ class ChatRepository @Inject constructor(
         val currentUserId = sessionManager.getUserId() ?: "anon_sender"
         val messageId = "media_${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
-        val isOnline = networkStateManager.isInternetAvailable.value
+        val convMode = sessionManager.getConversationMode()
+        val effectiveTransport = when (convMode) {
+            ConversationMode.OFFLINE -> "mesh"
+            ConversationMode.ONLINE -> "cloud"
+            ConversationMode.HYBRID -> if (networkStateManager.isInternetAvailable.value) "cloud" else "mesh"
+        }
+        val isOnline = (convMode == ConversationMode.ONLINE) || (convMode == ConversationMode.HYBRID && networkStateManager.isInternetAvailable.value)
 
         val contentName = customDisplayName ?: localFile.name
         val previewTag = when (dataType) {
@@ -542,7 +579,7 @@ class ChatRepository @Inject constructor(
         }
 
         // Ensure parent chat entry exists FIRST
-        ensureChatExists(chatId, targetId, previewTag, now, if (isOnline) "cloud" else "mesh")
+        ensureChatExists(chatId, targetId, previewTag, now, effectiveTransport)
 
         // Auto-optimize images (downsample to 1280px max + JPEG 80 + correct EXIF rotation)
         // so camera photos and attachments transmit lightning-fast and never hit storage/memory limits
@@ -565,7 +602,7 @@ class ChatRepository @Inject constructor(
             mimeType = mimeType,
             deliveryStatus = "saved",
             hopCount = 0,
-            transportUsed = if (isOnline) "cloud" else "mesh",
+            transportUsed = effectiveTransport,
             timestamp = now
         )
         try {
@@ -574,7 +611,10 @@ class ChatRepository @Inject constructor(
             android.util.Log.e("ChatRepository", "Failed to insert media message into Room: ${e.message}", e)
         }
 
-        if (isOnline) {
+        if (convMode == ConversationMode.OFFLINE) {
+            // Strictly Offline: Enqueue to Priority Queue for Wi-Fi Direct / BLE Mesh
+            routeViaMesh(message)
+        } else if (isOnline) {
             var cloudUrl: String? = null
             // 1. Attempt Firebase Storage upload
             try {
@@ -607,12 +647,12 @@ class ChatRepository @Inject constructor(
                 message
             }
 
-            // Also broadcast to nearby mesh peers if connected
-            if (meshConnectionManager.hasActivePeers()) {
+            // Only broadcast to nearby mesh peers if in HYBRID mode
+            if (convMode == ConversationMode.HYBRID && meshConnectionManager.hasActivePeers()) {
                 routeViaMesh(finalMessage)
             }
         } else {
-            // Offline: Enqueue to Priority Queue for Wi-Fi Direct
+            // Hybrid fallback when offline: Enqueue to Priority Queue for Wi-Fi Direct
             routeViaMesh(message)
         }
 
@@ -631,13 +671,19 @@ class ChatRepository @Inject constructor(
         val currentUserId = sessionManager.getUserId() ?: "anon_sender"
         val messageId = "voice_${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
-        val isOnline = networkStateManager.isInternetAvailable.value
+        val convMode = sessionManager.getConversationMode()
+        val effectiveTransport = when (convMode) {
+            ConversationMode.OFFLINE -> "mesh"
+            ConversationMode.ONLINE -> "cloud"
+            ConversationMode.HYBRID -> if (networkStateManager.isInternetAvailable.value) "cloud" else "mesh"
+        }
+        val isOnline = (convMode == ConversationMode.ONLINE) || (convMode == ConversationMode.HYBRID && networkStateManager.isInternetAvailable.value)
 
         val seconds = (durationMs / 1000).coerceAtLeast(1)
         val durationFormatted = String.format("%d:%02d", seconds / 60, seconds % 60)
         val preview = "🎤 Voice message ($durationFormatted)"
 
-        ensureChatExists(chatId, targetId, preview, now, if (isOnline) "cloud" else "mesh")
+        ensureChatExists(chatId, targetId, preview, now, effectiveTransport)
 
         val message = MessageEntity(
             messageId = messageId,
@@ -651,7 +697,7 @@ class ChatRepository @Inject constructor(
             mimeType = "audio/mp4",
             deliveryStatus = "saved",
             hopCount = 0,
-            transportUsed = if (isOnline) "cloud" else "mesh",
+            transportUsed = effectiveTransport,
             timestamp = now
         )
         try {
@@ -660,7 +706,10 @@ class ChatRepository @Inject constructor(
             android.util.Log.e("ChatRepository", "Failed to insert voice message into Room: ${e.message}", e)
         }
 
-        if (isOnline) {
+        if (convMode == ConversationMode.OFFLINE) {
+            // Strictly offline: route via mesh
+            routeViaMesh(message)
+        } else if (isOnline) {
             var cloudUrl: String? = null
             try {
                 val storageRef = storage.reference.child("ephemeral_voice/$chatId/$messageId/${localFile.name}")
@@ -685,10 +734,12 @@ class ChatRepository @Inject constructor(
                 messageDao.updateMessage(updatedMessage)
                 routeViaCloud(updatedMessage)
             } else {
-                routeViaMesh(message)
+                if (convMode == ConversationMode.HYBRID) {
+                    routeViaMesh(message)
+                }
             }
 
-            if (meshConnectionManager.hasActivePeers()) {
+            if (convMode == ConversationMode.HYBRID && meshConnectionManager.hasActivePeers()) {
                 routeViaMesh(message)
             }
         } else {
@@ -869,6 +920,10 @@ class ChatRepository @Inject constructor(
     }
 
     private suspend fun routeViaCloud(message: MessageEntity) {
+        if (sessionManager.getConversationMode() == ConversationMode.OFFLINE) {
+            android.util.Log.i("ChatRepository", "Offline mode active — cloud message routing skipped")
+            return
+        }
         try {
             val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
             if (auth.currentUser == null) {
@@ -935,9 +990,11 @@ class ChatRepository @Inject constructor(
             // Cloud handed off -> 1 blue check
             messageDao.updateDeliveryStatus(message.messageId, "mesh_sent")
         } catch (e: Exception) {
-            // Network glitch -> fallback to mesh
-            android.util.Log.e("ChatRepository", "Cloud routing failed, fallback to mesh: ${e.message}", e)
-            routeViaMesh(message)
+            // Network glitch -> fallback to mesh ONLY in HYBRID mode
+            android.util.Log.e("ChatRepository", "Cloud routing failed: ${e.message}", e)
+            if (sessionManager.getConversationMode() == ConversationMode.HYBRID) {
+                routeViaMesh(message)
+            }
         }
     }
 
@@ -1255,6 +1312,11 @@ class ChatRepository @Inject constructor(
      * is missing (FAILED_PRECONDITION).
      */
     fun startCloudListener(currentUserId: String, currentUsername: String? = null) {
+        if (sessionManager.getConversationMode() == ConversationMode.OFFLINE) {
+            android.util.Log.i("ChatRepository", "Offline mode active — cloud listener suppressed")
+            return
+        }
+
         if (cloudListenerStarted) {
             android.util.Log.d("ChatRepository", "Cloud listener already active, skipping duplicate start")
             return

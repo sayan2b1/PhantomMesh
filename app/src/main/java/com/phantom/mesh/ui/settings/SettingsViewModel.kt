@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import com.phantom.mesh.data.local.backup.BackupFrequency
 import com.phantom.mesh.data.local.backup.BackupMetadata
 import com.phantom.mesh.data.local.backup.LocalChatBackupManager
+import com.phantom.mesh.model.ConversationMode
 import javax.inject.Inject
 
 @HiltViewModel
@@ -35,6 +36,9 @@ class SettingsViewModel @Inject constructor(
 
     val isBluetoothOnlyMode: StateFlow<Boolean> = sessionManager.bluetoothOnlyModeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val conversationMode: StateFlow<ConversationMode> = sessionManager.conversationModeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getConversationMode())
 
     val chatWallpaperPath: StateFlow<String?> = sessionManager.chatWallpaperFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
@@ -202,6 +206,17 @@ class SettingsViewModel @Inject constructor(
                 _statusMessage.value = "Chat theme reset to default."
             } catch (e: Exception) {
                 _statusMessage.value = "Failed to reset wallpaper: ${e.message}"
+            }
+        }
+    }
+
+    fun setConversationMode(mode: ConversationMode) {
+        viewModelScope.launch {
+            sessionManager.setConversationMode(mode)
+            _statusMessage.value = when (mode) {
+                ConversationMode.HYBRID -> "Conversation mode set to Hybrid (Offline + Online)"
+                ConversationMode.ONLINE -> "Conversation mode set to Online (Cloud only)"
+                ConversationMode.OFFLINE -> "Conversation mode set to Offline (Bluetooth + Wi-Fi Direct only)"
             }
         }
     }

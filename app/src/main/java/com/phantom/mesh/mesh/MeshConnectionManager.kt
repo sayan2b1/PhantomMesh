@@ -19,6 +19,7 @@ import com.phantom.mesh.data.local.dao.MeshQueueDao
 import com.phantom.mesh.data.local.dao.MessageDao
 import com.phantom.mesh.data.local.entity.MeshQueueEntity
 import com.phantom.mesh.data.local.preferences.SessionManager
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.network.NetworkStateManager
 import com.phantom.mesh.network.NetworkTransport
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -126,6 +127,11 @@ class MeshConnectionManager @Inject constructor(
      * Also starts a background liveness loop to maintain persistent connectivity.
      */
     fun startMesh() {
+        if (sessionManager.getConversationMode() == ConversationMode.ONLINE) {
+            android.util.Log.i(TAG, "Online mode active — mesh advertising & discovery suppressed")
+            return
+        }
+
         if (localUserId == null) {
             localUserId = sessionManager.getUserId() ?: "anon_${UUID.randomUUID().toString().take(6)}"
         }
@@ -139,10 +145,16 @@ class MeshConnectionManager @Inject constructor(
         if (livenessJob?.isActive != true) {
             livenessJob = scope.launch {
                 launch {
-                    sessionManager.bluetoothOnlyModeFlow.collectLatest {
-                        if (isAdvertising || isDiscovering) {
-                            android.util.Log.i(TAG, "Bluetooth-only mode changed: $it, restarting mesh")
-                            restartMesh()
+                    sessionManager.conversationModeFlow.collectLatest { mode ->
+                        android.util.Log.i(TAG, "Conversation mode changed: $mode")
+                        if (mode == ConversationMode.ONLINE) {
+                            stopMesh()
+                        } else {
+                            if (!isAdvertising || !isDiscovering) {
+                                startMesh()
+                            } else {
+                                restartMesh()
+                            }
                         }
                     }
                 }

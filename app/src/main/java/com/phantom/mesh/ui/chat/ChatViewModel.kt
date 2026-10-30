@@ -7,6 +7,7 @@ import com.phantom.mesh.data.local.entity.MessageEntity
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.data.repository.ChatRepository
 import com.phantom.mesh.network.NetworkStateManager
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.network.NetworkTransport
 import com.phantom.mesh.calling.ActiveCall
 import com.phantom.mesh.calling.CallInitiationResult
@@ -43,7 +44,27 @@ class ChatViewModel @Inject constructor(
     val chatId: String = checkNotNull(savedStateHandle["chatId"])
     val targetId: String = checkNotNull(savedStateHandle["targetId"])
 
-    val activeTransport: StateFlow<NetworkTransport> = networkStateManager.activeTransport
+    val conversationMode: StateFlow<ConversationMode> = sessionManager.conversationModeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getConversationMode())
+
+    val activeTransport: StateFlow<NetworkTransport> = kotlinx.coroutines.flow.combine(
+        networkStateManager.activeTransport,
+        sessionManager.conversationModeFlow
+    ) { transport, mode ->
+        when (mode) {
+            ConversationMode.OFFLINE -> {
+                if (transport == NetworkTransport.Cloud) NetworkTransport.Offline else transport
+            }
+            ConversationMode.ONLINE -> {
+                if (transport is NetworkTransport.Bluetooth || transport is NetworkTransport.WifiDirect) {
+                    if (networkStateManager.isInternetAvailable.value) NetworkTransport.Cloud else NetworkTransport.Offline
+                } else {
+                    transport
+                }
+            }
+            ConversationMode.HYBRID -> transport
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), networkStateManager.activeTransport.value)
 
     val peerTypingState: StateFlow<com.phantom.mesh.util.TypingStatusManager.TypingState> =
         typingStatusManager.getPeerTypingState(chatId)

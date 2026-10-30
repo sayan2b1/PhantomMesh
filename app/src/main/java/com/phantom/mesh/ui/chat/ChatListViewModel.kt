@@ -7,6 +7,7 @@ import com.phantom.mesh.data.local.preferences.ContactAliasManager
 import com.phantom.mesh.data.local.preferences.SessionManager
 import com.phantom.mesh.data.repository.ChatRepository
 import com.phantom.mesh.mesh.MeshConnectionManager
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.network.NetworkStateManager
 import com.phantom.mesh.network.NetworkTransport
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -30,7 +31,28 @@ class ChatListViewModel @Inject constructor(
     private val typingStatusManager: com.phantom.mesh.util.TypingStatusManager
 ) : ViewModel() {
 
-    val activeTransport: StateFlow<NetworkTransport> = networkStateManager.activeTransport
+    val activeTransport: StateFlow<NetworkTransport> = kotlinx.coroutines.flow.combine(
+        networkStateManager.activeTransport,
+        sessionManager.conversationModeFlow
+    ) { transport, mode ->
+        when (mode) {
+            ConversationMode.OFFLINE -> {
+                if (transport == NetworkTransport.Cloud) {
+                    if (meshConnectionManager.hasActivePeers()) NetworkTransport.Bluetooth else NetworkTransport.Offline
+                } else {
+                    transport
+                }
+            }
+            ConversationMode.ONLINE -> {
+                if (transport is NetworkTransport.Bluetooth || transport is NetworkTransport.WifiDirect) {
+                    if (networkStateManager.isInternetAvailable.value) NetworkTransport.Cloud else NetworkTransport.Offline
+                } else {
+                    transport
+                }
+            }
+            ConversationMode.HYBRID -> transport
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), networkStateManager.activeTransport.value)
 
     val peerTypingStates: StateFlow<Map<String, com.phantom.mesh.util.TypingStatusManager.TypingState>> =
         typingStatusManager.peerTypingStates
@@ -56,6 +78,13 @@ class ChatListViewModel @Inject constructor(
     val currentUserId: StateFlow<String?> = sessionManager.userIdFlow
     val isBluetoothOnlyMode: StateFlow<Boolean> = sessionManager.bluetoothOnlyModeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val conversationMode: StateFlow<ConversationMode> = sessionManager.conversationModeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sessionManager.getConversationMode())
+
+    fun setConversationMode(mode: ConversationMode) {
+        sessionManager.setConversationMode(mode)
+    }
 
     val contactAliases: StateFlow<Map<String, String>> = contactAliasManager.aliasesFlow
 

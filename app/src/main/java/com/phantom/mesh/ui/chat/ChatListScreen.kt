@@ -84,6 +84,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.phantom.mesh.data.local.entity.ChatEntity
+import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.ui.components.NetworkIndicator
 import com.phantom.mesh.ui.theme.DarkBackground
 import com.phantom.mesh.ui.theme.DarkCard
@@ -116,6 +117,7 @@ fun ChatListScreen(
     val currentUsername by viewModel.currentUsername.collectAsState()
     val currentUserId by viewModel.currentUserId.collectAsState()
     val isBtOnly by viewModel.isBluetoothOnlyMode.collectAsState()
+    val conversationMode by viewModel.conversationMode.collectAsState()
     val connectedPeers by viewModel.connectedPeers.collectAsState()
     val contactAliases by viewModel.contactAliases.collectAsState()
     val peerTypingStates by viewModel.peerTypingStates.collectAsState()
@@ -138,6 +140,7 @@ fun ChatListScreen(
     var chatToDelete by remember { mutableStateOf<ChatEntity?>(null) }
     var showArchivedChats by remember { mutableStateOf(false) }
     var aliasInput by remember { mutableStateOf("") }
+    var dismissedOptionalRecommendation by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     var isBtEnabled by remember { mutableStateOf(HardwareStateUtil.isBluetoothEnabled(context)) }
@@ -284,59 +287,176 @@ fun ChatListScreen(
                     }
                 }
             }
-            // Hardware state warning banners for Wi-Fi, Bluetooth, and Location
-            if (isBtOnly) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(NeonCyan.copy(alpha = 0.08f))
-                        .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Bluetooth,
-                            contentDescription = null,
-                            tint = NeonCyan,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "Bluetooth-Only Mode Active (Wi-Fi kept OFF for testing)",
-                            color = NeonCyan,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
+            // ── CONVERSATION MODE HARDWARE ADAPTATION ─────────────────────────
+            when (conversationMode) {
+                ConversationMode.ONLINE -> {
+                    // Online mode (only cloud services):
+                    // Does NOT force bluetooth, wifi, or location, and throws NO recommendations or warnings.
+                }
+
+                ConversationMode.HYBRID -> {
+                    // Hybrid Mode (Both Offline + Online):
+                    // Does not force radios, but presents an optional recommendation to turn them on.
+                    val anyRadioOff = !isBtEnabled || !isWifiEnabled || !isLocEnabled
+                    if (anyRadioOff && !dismissedOptionalRecommendation) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(NeonCyan.copy(alpha = 0.08f))
+                                .border(1.dp, NeonCyan.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Bluetooth,
+                                    contentDescription = null,
+                                    tint = NeonCyan,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Optional: Enable Mesh Radios",
+                                        color = NeonCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "Bluetooth, Wi-Fi or Location are optional in Hybrid Mode, but recommended for offline mesh backup.",
+                                        color = TextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                TextButton(
+                                    onClick = {
+                                        when {
+                                            !isBtEnabled -> HardwareStateUtil.openBluetoothSettings(context)
+                                            !isWifiEnabled -> HardwareStateUtil.openWifiSettings(context)
+                                            !isLocEnabled -> HardwareStateUtil.openLocationSettings(context)
+                                        }
+                                    }
+                                ) {
+                                    Text("TURN ON", color = NeonCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                }
+                                TextButton(
+                                    onClick = { dismissedOptionalRecommendation = true }
+                                ) {
+                                    Text("✕", color = TextMuted, fontSize = 12.sp)
+                                }
+                            }
+                        }
                     }
                 }
-            } else if (!isWifiEnabled && !isBtEnabled) {
-                MeshHardwareWarningBanner(
-                    icon = Icons.Default.Wifi,
-                    title = "All Mesh Radios are OFF",
-                    message = "Turn on Bluetooth or Wi-Fi to allow your phone to discover and link with local mesh peers.",
-                    actionText = "TURN ON",
-                    onAction = { HardwareStateUtil.openWifiSettings(context) }
-                )
-            }
-            if (!isBtEnabled) {
-                MeshHardwareWarningBanner(
-                    icon = Icons.Default.Bluetooth,
-                    title = "Bluetooth is Turned OFF",
-                    message = "Nearby Mesh network requires Bluetooth to discover and connect with local peers.",
-                    actionText = "TURN ON",
-                    onAction = { HardwareStateUtil.openBluetoothSettings(context) }
-                )
-            }
-            if (!isLocEnabled) {
-                MeshHardwareWarningBanner(
-                    icon = Icons.Default.LocationOn,
-                    title = "Location (GPS) is Turned OFF",
-                    message = "Android requires Location turned ON to discover local BLE mesh devices.",
-                    actionText = "TURN ON",
-                    onAction = { HardwareStateUtil.openLocationSettings(context) }
-                )
+
+                ConversationMode.OFFLINE -> {
+                    // Offline mode (Only bluetooth + wifi direct services):
+                    // FORCES bluetooth, wifi, and location services to be active.
+                    val anyRadioOff = !isBtEnabled || !isWifiEnabled || !isLocEnabled
+                    if (anyRadioOff) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(DuressCrimson.copy(alpha = 0.12f))
+                                .border(1.dp, DuressCrimson.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                                .padding(12.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Bluetooth,
+                                    contentDescription = null,
+                                    tint = DuressCrimson,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "OFFLINE MODE: RADIOS MANDATORY",
+                                        color = DuressCrimson,
+                                        fontSize = 12.sp,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "Offline mode strictly relies on device-to-device mesh. Bluetooth, Wi-Fi, and Location MUST be turned ON.",
+                                        color = TextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (!isBtEnabled) {
+                                    androidx.compose.material3.Button(
+                                        onClick = { HardwareStateUtil.openBluetoothSettings(context) },
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = DuressCrimson),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.weight(1f).height(32.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("ENABLE BT", fontSize = 10.sp, color = androidx.compose.ui.graphics.Color.White, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                                if (!isWifiEnabled) {
+                                    androidx.compose.material3.Button(
+                                        onClick = { HardwareStateUtil.openWifiSettings(context) },
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = DuressCrimson),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.weight(1f).height(32.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("ENABLE WI-FI", fontSize = 10.sp, color = androidx.compose.ui.graphics.Color.White, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                                if (!isLocEnabled) {
+                                    androidx.compose.material3.Button(
+                                        onClick = { HardwareStateUtil.openLocationSettings(context) },
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = DuressCrimson),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.weight(1f).height(32.dp),
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                    ) {
+                                        Text("ENABLE GPS", fontSize = 10.sp, color = androidx.compose.ui.graphics.Color.White, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // All radios active in Offline Mode
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(WarningAmber.copy(alpha = 0.1f))
+                                .border(1.dp, WarningAmber.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Bluetooth,
+                                    contentDescription = null,
+                                    tint = WarningAmber,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Offline Mode Active (Mesh only • Cloud strictly bypassed)",
+                                    color = WarningAmber,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             if (connectedPeers.isNotEmpty()) {
