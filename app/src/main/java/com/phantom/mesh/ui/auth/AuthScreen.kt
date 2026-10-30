@@ -148,7 +148,7 @@ fun AuthScreen(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "v3.0.0",
+                text = "v${com.phantom.mesh.BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.labelSmall,
                 color = NeonCyan.copy(alpha = 0.8f),
                 fontFamily = FontFamily.Monospace,
