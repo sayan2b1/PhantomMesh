@@ -3,7 +3,7 @@
 > **Decentralized, Off-Grid Mesh & Hybrid Cloud Messenger for Android**
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
-[![Version](https://img.shields.io/badge/Version-v3.0.0-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
+[![Version](https://img.shields.io/badge/Version-v3.2.0-cyan.svg)](https://github.com/sayan2b1/PhantomMesh/releases)
 [![Language](https://img.shields.io/badge/Language-Kotlin-blue.svg)](https://kotlinlang.org/)
 [![UI](https://img.shields.io/badge/UI-Jetpack%20Compose-purple.svg)](https://developer.android.com/jetpack/compose)
 [![Mesh Engine](https://img.shields.io/badge/Engine-Nearby%20Connections%20P2P-cyan.svg)](https://developers.google.com/nearby/connections/overview)
@@ -14,6 +14,27 @@
 ---
 
 ## ✨ Key Features
+
+### 📲 In-App Over-The-Air (OTA) Updates & GitHub Auto-Installer
+- **Autonomous GitHub Releases Monitoring**: Directly polls the GitHub Releases API (`https://api.github.com/repos/sayan2b1/PhantomMesh/releases/latest`) on startup and on demand.
+- **Startup Update Pop-Up (`UpdateAvailableDialog`)**: Displays version tags, package size, and an expandable **"View Changelogs"** card showing the exact release description published on GitHub.
+- **In-App Streaming Download**: Streams APK packages directly within the app, displaying live percentage progress (`%`) and `MB / MB` stats.
+- **Direct Package Installer Launch**: Triggers Android's package installer (`FileProvider`) immediately upon download completion without requiring users to browse third-party sites or external file explorers.
+- **Snooze & Ignore Options**: Features a 24-hour **"Remind me later"** cooldown and an **"Ignore"** option to suppress specific version alerts.
+- **Settings Hub & Offline Notes**: Permanent **"Check for Updates"** tile under the `APP UPDATES & SYSTEM` section with a manual check button and an offline **"View Release Notes & Changelogs"** viewer.
+- **Celebratory Post-Install Welcome (`PostInstallWelcomeDialog`)**: Displays a celebratory pop-up on first launch after an update, presenting the newly installed version, release title, and full changelog.
+
+### 🎛️ 3-Mode Conversation Control Selector
+Replaced the legacy binary Bluetooth-Only toggle with a versatile 3-mode communication architecture:
+- **Hybrid Mode (Both Offline + Online — Recommended)**:
+  - Opportunistically leverages both peer mesh (BLE & Wi-Fi Direct) and Cloud Relay.
+  - Gently recommends enabling Bluetooth, Wi-Fi, and Location services without hardware enforcement.
+- **Online Mode (Cloud Services Only)**:
+  - Exclusively uses end-to-end encrypted cloud messaging.
+  - Completely silences and bypasses hardware enforcement for Bluetooth, Wi-Fi Direct, and Location services.
+- **Offline Mode (Air-Gapped Mesh Only)**:
+  - Strictly operates over peer-to-peer Bluetooth and Wi-Fi Direct mesh networking.
+  - Enforces local hardware radio services and completely disables all cloud traffic and background syncing.
 
 ### 📡 Offline Decentralized Mesh Networking
 - **Zero-Internet Communication**: Exchange messages and media without Wi-Fi routers, cellular towers, or internet connectivity.
@@ -228,6 +249,7 @@ PhantomMesh requires the following system permissions to operate the hybrid mesh
 | `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` | Media attachments and gallery export/cleanup |
 | `READ_CONTACTS` | Device contact card sharing with dial actions |
 | `POST_NOTIFICATIONS` | High-priority incoming message notifications (Android 13+) |
+| `REQUEST_INSTALL_PACKAGES` | Allows seamless in-app Over-The-Air (OTA) updates directly from GitHub Releases |
 
 > ℹ️ **Note**: Location services (GPS) must be enabled on Android devices for Nearby Connections beacon discovery.
 
