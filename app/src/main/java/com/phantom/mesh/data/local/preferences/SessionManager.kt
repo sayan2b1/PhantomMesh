@@ -44,6 +44,14 @@ class SessionManager @Inject constructor(
         private const val KEY_BLOCKED_USERS = "session_blocked_users"
         private const val KEY_DND_ENABLED = "session_dnd_enabled"
 
+        // ── OTA Software Updates ───────────────────────────────────
+        private const val KEY_IGNORED_UPDATE_TAG = "session_ignored_update_tag"
+        private const val KEY_LAST_UPDATE_REMIND_MS = "session_last_update_remind_ms"
+        private const val KEY_LAST_SEEN_APP_VERSION = "session_last_seen_app_version"
+        private const val KEY_LAST_SAVED_RELEASE_NOTES = "session_last_saved_release_notes"
+        private const val KEY_LAST_SAVED_RELEASE_TITLE = "session_last_saved_release_title"
+        private const val KEY_LAST_SAVED_RELEASE_TAG = "session_last_saved_release_tag"
+
         /** 24 Hours in milliseconds */
         const val SESSION_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000L
     }
@@ -281,6 +289,34 @@ class SessionManager @Inject constructor(
         prefs.edit().putBoolean(KEY_DND_ENABLED, enabled).commit()
         _dndEnabledFlow.value = enabled
     }
+
+    // ── OTA SOFTWARE UPDATES ──────────────────────────────────
+    fun getIgnoredUpdateTag(): String? = prefs.getString(KEY_IGNORED_UPDATE_TAG, null)
+    fun setIgnoredUpdateTag(tag: String) {
+        prefs.edit().putString(KEY_IGNORED_UPDATE_TAG, tag).commit()
+    }
+
+    fun getLastUpdateRemindMs(): Long = prefs.getLong(KEY_LAST_UPDATE_REMIND_MS, 0L)
+    fun setLastUpdateRemindMs(timestamp: Long = System.currentTimeMillis()) {
+        prefs.edit().putLong(KEY_LAST_UPDATE_REMIND_MS, timestamp).commit()
+    }
+
+    fun getLastSeenAppVersion(): String? = prefs.getString(KEY_LAST_SEEN_APP_VERSION, null)
+    fun setLastSeenAppVersion(version: String) {
+        prefs.edit().putString(KEY_LAST_SEEN_APP_VERSION, version).commit()
+    }
+
+    fun saveLatestReleaseInfo(tag: String, title: String, notes: String) {
+        prefs.edit()
+            .putString(KEY_LAST_SAVED_RELEASE_TAG, tag)
+            .putString(KEY_LAST_SAVED_RELEASE_TITLE, title)
+            .putString(KEY_LAST_SAVED_RELEASE_NOTES, notes)
+            .commit()
+    }
+
+    fun getLastSavedReleaseNotes(): String? = prefs.getString(KEY_LAST_SAVED_RELEASE_NOTES, null)
+    fun getLastSavedReleaseTitle(): String? = prefs.getString(KEY_LAST_SAVED_RELEASE_TITLE, null)
+    fun getLastSavedReleaseTag(): String? = prefs.getString(KEY_LAST_SAVED_RELEASE_TAG, null)
 
     /**
      * Checks if the stored session is valid and has not expired (within 24 hours).

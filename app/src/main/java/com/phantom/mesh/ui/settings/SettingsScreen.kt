@@ -63,6 +63,16 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.SwapCalls
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.foundation.layout.PaddingValues
+import com.phantom.mesh.BuildConfig
+import com.phantom.mesh.update.DownloadState
+import com.phantom.mesh.update.UpdateCheckResult
+import com.phantom.mesh.ui.update.ChangelogViewerDialog
+import com.phantom.mesh.ui.update.UpdateAvailableDialog
 import com.phantom.mesh.model.ConversationMode
 import com.phantom.mesh.util.HardwareStateUtil
 import androidx.compose.material3.AlertDialog
@@ -185,6 +195,29 @@ fun SettingsScreen(
     var showSecurityQuestionDialog by remember { mutableStateOf(false) }
     var showForgotPasswordDialog by remember { mutableStateOf(false) }
 
+    // Over-the-air update states
+    val downloadState by viewModel.downloadState.collectAsState()
+    val updateCheckResult by viewModel.updateCheckResult.collectAsState()
+    val isCheckingUpdate by viewModel.isCheckingUpdate.collectAsState()
+    var showChangelogDialog by remember { mutableStateOf(false) }
+    var upToDateDialogVersion by remember { mutableStateOf<String?>(null) }
+    var updateErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    androidx.compose.runtime.LaunchedEffect(updateCheckResult) {
+        when (val res = updateCheckResult) {
+            is UpdateCheckResult.UpToDate -> {
+                upToDateDialogVersion = res.currentVersion
+            }
+            is UpdateCheckResult.Error -> {
+                updateErrorMessage = res.message
+            }
+            is UpdateCheckResult.NoInternet -> {
+                updateErrorMessage = "No internet connection. Please verify your network connection and try again."
+            }
+            else -> {}
+        }
+    }
+
     val wallpaperPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: android.net.Uri? ->
@@ -292,6 +325,9 @@ fun SettingsScreen(
                             lastBackupMessageCount = lastBackupMessageCount,
                             readReceiptsEnabled = readReceiptsEnabled,
                             preferredRefreshRate = preferredRefreshRate,
+                            isCheckingUpdate = isCheckingUpdate,
+                            onCheckForUpdates = { viewModel.checkForUpdatesManual() },
+                            onViewChangelogs = { showChangelogDialog = true },
                             onToggleReadReceipts = { viewModel.setReadReceiptsEnabled(it) },
                             onToggleBluetoothOnly = { viewModel.setBluetoothOnlyMode(it) },
                             onSelectConversationMode = { viewModel.setConversationMode(it) },
@@ -589,6 +625,110 @@ fun SettingsScreen(
             }
         )
     }
+
+    // ── IN-APP OVER-THE-AIR (OTA) UPDATE DIALOGS ────────────────────────────
+    (updateCheckResult as? UpdateCheckResult.UpdateAvailable)?.let { updateAvailable ->
+        UpdateAvailableDialog(
+            release = updateAvailable.release,
+            downloadState = downloadState,
+            onUpdateClick = { viewModel.downloadAndInstall(updateAvailable.release) },
+            onRemindLaterClick = { viewModel.remindUpdateLater() },
+            onIgnoreClick = { viewModel.ignoreUpdate(updateAvailable.release.tagName) },
+            onDismissRequest = { viewModel.dismissUpdateDialog() }
+        )
+    }
+
+    upToDateDialogVersion?.let { ver ->
+        AlertDialog(
+            onDismissRequest = {
+                upToDateDialogVersion = null
+                viewModel.dismissUpdateDialog()
+            },
+            containerColor = DarkSurface,
+            titleContentColor = NeonCyan,
+            textContentColor = TextSecondary,
+            shape = RoundedCornerShape(16.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = NeonGreen,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Up to Date", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Text(
+                    text = "PhantomMesh v$ver is the latest release. No new updates are available at this time.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        upToDateDialogVersion = null
+                        viewModel.dismissUpdateDialog()
+                    }
+                ) {
+                    Text("OK", color = NeonCyan, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    updateErrorMessage?.let { err ->
+        AlertDialog(
+            onDismissRequest = {
+                updateErrorMessage = null
+                viewModel.dismissUpdateDialog()
+            },
+            containerColor = DarkSurface,
+            titleContentColor = DuressCrimson,
+            textContentColor = TextSecondary,
+            shape = RoundedCornerShape(16.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = DuressCrimson,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Update Check", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Text(
+                    text = err,
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        updateErrorMessage = null
+                        viewModel.dismissUpdateDialog()
+                    }
+                ) {
+                    Text("DISMISS", color = NeonCyan)
+                }
+            }
+        )
+    }
+
+    if (showChangelogDialog) {
+        ChangelogViewerDialog(
+            versionName = "v${BuildConfig.VERSION_NAME}",
+            changelogText = viewModel.getCurrentSavedReleaseNotes(),
+            onDismiss = { showChangelogDialog = false }
+        )
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -605,6 +745,9 @@ private fun SettingsMainContent(
     lastBackupMessageCount: Int,
     readReceiptsEnabled: Boolean,
     preferredRefreshRate: Int,
+    isCheckingUpdate: Boolean,
+    onCheckForUpdates: () -> Unit,
+    onViewChangelogs: () -> Unit,
     onToggleReadReceipts: (Boolean) -> Unit,
     onToggleBluetoothOnly: (Boolean) -> Unit,
     onSelectConversationMode: (ConversationMode) -> Unit,
@@ -980,6 +1123,138 @@ private fun SettingsMainContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // App Updates & Changelogs Section
+        Text(
+            text = "APP UPDATES & SYSTEM",
+            color = NeonCyan,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(DarkSurfaceVariant)
+                .border(1.dp, NeonCyan.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                .padding(14.dp)
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Check for Updates",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(NeonCyan.copy(alpha = 0.15f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "v${BuildConfig.VERSION_NAME}",
+                                    color = NeonCyan,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "Check GitHub for newer releases & update directly",
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    if (isCheckingUpdate) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = NeonCyan,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Button(
+                            onClick = onCheckForUpdates,
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = DarkBackground,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "CHECK",
+                                color = DarkBackground,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(DarkCard)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onViewChangelogs() }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Description,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "View Release Notes & Changelogs",
+                            color = NeonCyan,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // Log out button
         Button(
             onClick = onLogoutClick,
@@ -1012,7 +1287,7 @@ private fun SettingsMainContent(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "PhantomMesh v3.0.0",
+                text = "PhantomMesh v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
                 color = NeonCyan,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,

@@ -75,6 +75,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var localChatBackupManager: com.phantom.mesh.data.local.backup.LocalChatBackupManager
 
+    @Inject
+    lateinit var appUpdateManager: com.phantom.mesh.update.AppUpdateManager
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
@@ -260,6 +263,60 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Text("Dismiss")
                             }
+                        }
+                    )
+                }
+
+                // ── POST-INSTALLATION WELCOME POP-UP ────────────────────────
+                var postInstallInfo by remember { mutableStateOf<com.phantom.mesh.update.PostInstallInfo?>(null) }
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    postInstallInfo = appUpdateManager.checkPostInstallWelcome()
+                }
+
+                postInstallInfo?.let { info ->
+                    com.phantom.mesh.ui.update.PostInstallWelcomeDialog(
+                        info = info,
+                        onDismiss = { postInstallInfo = null }
+                    )
+                }
+
+                // ── STARTUP OVER-THE-AIR (OTA) UPDATE CHECK ─────────────────
+                var startupUpdateRelease by remember { mutableStateOf<com.phantom.mesh.update.ReleaseInfo?>(null) }
+                val updateDownloadState by appUpdateManager.downloadState.collectAsState()
+
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(2000)
+                    val result = appUpdateManager.checkForUpdates(isManualCheck = false)
+                    if (result is com.phantom.mesh.update.UpdateCheckResult.UpdateAvailable) {
+                        startupUpdateRelease = result.release
+                    }
+                }
+
+                startupUpdateRelease?.let { release ->
+                    com.phantom.mesh.ui.update.UpdateAvailableDialog(
+                        release = release,
+                        downloadState = updateDownloadState,
+                        onUpdateClick = {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                try {
+                                    val apk = appUpdateManager.downloadUpdate(release)
+                                    appUpdateManager.triggerInstall(apk)
+                                } catch (_: Exception) {}
+                            }
+                        },
+                        onRemindLaterClick = {
+                            sessionManager.setLastUpdateRemindMs(System.currentTimeMillis())
+                            startupUpdateRelease = null
+                            appUpdateManager.resetDownloadState()
+                        },
+                        onIgnoreClick = {
+                            sessionManager.setIgnoredUpdateTag(release.tagName)
+                            startupUpdateRelease = null
+                            appUpdateManager.resetDownloadState()
+                        },
+                        onDismissRequest = {
+                            startupUpdateRelease = null
+                            appUpdateManager.resetDownloadState()
                         }
                     )
                 }

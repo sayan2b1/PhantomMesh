@@ -16,6 +16,11 @@ import com.phantom.mesh.data.local.backup.BackupFrequency
 import com.phantom.mesh.data.local.backup.BackupMetadata
 import com.phantom.mesh.data.local.backup.LocalChatBackupManager
 import com.phantom.mesh.model.ConversationMode
+import com.phantom.mesh.update.AppUpdateManager
+import com.phantom.mesh.update.DownloadState
+import com.phantom.mesh.update.ReleaseInfo
+import com.phantom.mesh.update.UpdateCheckResult
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
@@ -24,7 +29,8 @@ class SettingsViewModel @Inject constructor(
     private val duressWipeManager: DuressWipeManager,
     private val sessionManager: SessionManager,
     private val localChatBackupManager: LocalChatBackupManager,
-    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager
+    private val contactAliasManager: com.phantom.mesh.data.local.preferences.ContactAliasManager,
+    private val appUpdateManager: AppUpdateManager
 ) : ViewModel() {
 
     val username: StateFlow<String?> = sessionManager.usernameFlow
@@ -403,5 +409,66 @@ class SettingsViewModel @Inject constructor(
 
     fun clearStatusMessage() {
         _statusMessage.value = null
+    }
+
+    // ── IN-APP OVER-THE-AIR (OTA) UPDATES ──────────────────────────────
+    val downloadState: StateFlow<DownloadState> = appUpdateManager.downloadState
+
+    private val _updateCheckResult = MutableStateFlow<UpdateCheckResult?>(null)
+    val updateCheckResult: StateFlow<UpdateCheckResult?> = _updateCheckResult.asStateFlow()
+
+    private val _isCheckingUpdate = MutableStateFlow(false)
+    val isCheckingUpdate: StateFlow<Boolean> = _isCheckingUpdate.asStateFlow()
+
+    fun checkForUpdatesManual() {
+        if (_isCheckingUpdate.value) return
+        viewModelScope.launch {
+            _isCheckingUpdate.value = true
+            _updateCheckResult.value = null
+            val result = appUpdateManager.checkForUpdates(isManualCheck = true)
+            _updateCheckResult.value = result
+            _isCheckingUpdate.value = false
+        }
+    }
+
+    fun downloadAndInstall(release: ReleaseInfo) {
+        viewModelScope.launch {
+            try {
+                val apkFile = appUpdateManager.downloadUpdate(release)
+                appUpdateManager.triggerInstall(apkFile)
+            } catch (e: Exception) {
+                // Error state is caught and exposed by appUpdateManager.downloadState
+            }
+        }
+    }
+
+    fun triggerInstall(apkFile: File) {
+        appUpdateManager.triggerInstall(apkFile)
+    }
+
+    fun remindUpdateLater() {
+        sessionManager.setLastUpdateRemindMs(System.currentTimeMillis())
+        _updateCheckResult.value = null
+        appUpdateManager.resetDownloadState()
+    }
+
+    fun ignoreUpdate(tag: String) {
+        sessionManager.setIgnoredUpdateTag(tag)
+        _updateCheckResult.value = null
+        appUpdateManager.resetDownloadState()
+    }
+
+    fun dismissUpdateDialog() {
+        _updateCheckResult.value = null
+        appUpdateManager.resetDownloadState()
+    }
+
+    fun getCurrentSavedReleaseNotes(): String {
+        return sessionManager.getLastSavedReleaseNotes()
+            ?: "PhantomMesh v${com.phantom.mesh.BuildConfig.VERSION_NAME} (Build ${com.phantom.mesh.BuildConfig.VERSION_CODE})\n\n" +
+               "• In-App OTA Updates: Auto-checks GitHub Releases with changelogs and one-tap in-app installation.\n" +
+               "• 3-Mode Conversation Control: Hybrid (Mesh + Cloud), Online-Only (Zero Hardware Enforcement), and Offline-Only (Strict Air-Gapped Mesh).\n" +
+               "• Decentralized P2P Mesh: End-to-end forward secrecy over BLE & Wi-Fi Direct.\n" +
+               "• Cloud Messaging & Encrypted Backups: Multi-device sync with zero tracking."
     }
 }
