@@ -290,12 +290,12 @@ You can build the debug APK directly via the Gradle wrapper:
 
 The compiled APK will be generated at:
 ```
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/debug/PhantomMesh.apk
 ```
 
 Install on connected Android devices:
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/PhantomMesh.apk
 ```
 
 ---
