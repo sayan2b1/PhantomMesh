@@ -521,9 +521,9 @@ fun ChatScreen(
                         }
                         Text(
                             text = when (conversationMode) {
-                                com.phantom.mesh.model.ConversationMode.OFFLINE -> "E2E Offline Mesh Channel"
-                                com.phantom.mesh.model.ConversationMode.ONLINE -> "E2E Cloud Encrypted Channel"
-                                com.phantom.mesh.model.ConversationMode.HYBRID -> "E2E Hybrid Encrypted Channel"
+                                com.phantom.mesh.model.ConversationMode.OFFLINE -> "End-to-End Encrypted Offline Mesh"
+                                com.phantom.mesh.model.ConversationMode.ONLINE -> "End-to-End Encrypted Cloud Channel"
+                                com.phantom.mesh.model.ConversationMode.HYBRID -> "End-to-End Encrypted Hybrid Channel"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = TextMuted

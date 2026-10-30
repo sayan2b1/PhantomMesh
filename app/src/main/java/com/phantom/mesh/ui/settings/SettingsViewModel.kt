@@ -214,9 +214,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             sessionManager.setConversationMode(mode)
             _statusMessage.value = when (mode) {
-                ConversationMode.HYBRID -> "Conversation mode set to Hybrid (Offline + Online)"
-                ConversationMode.ONLINE -> "Conversation mode set to Online (Cloud only)"
-                ConversationMode.OFFLINE -> "Conversation mode set to Offline (Bluetooth + Wi-Fi Direct only)"
+                ConversationMode.HYBRID -> "Conversation mode updated: Hybrid (Adaptive Cloud & Mesh multi-transport active)."
+                ConversationMode.ONLINE -> "Conversation mode updated: Online (Cloud infrastructure active; mesh radios optional)."
+                ConversationMode.OFFLINE -> "Conversation mode updated: Offline (Decentralized mesh active; cloud services bypassed)."
             }
         }
     }

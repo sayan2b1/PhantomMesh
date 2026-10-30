@@ -876,7 +876,7 @@ private fun SettingsMainContent(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "Select conversation mode",
+                            text = "Select Conversation Mode",
                             style = MaterialTheme.typography.titleSmall,
                             color = TextPrimary,
                             fontWeight = FontWeight.SemiBold
@@ -966,7 +966,7 @@ private fun SettingsMainContent(
                                     if (!bt || !wifi || !loc) {
                                         android.widget.Toast.makeText(
                                             context,
-                                            "Offline Mode active: Bluetooth, Wi-Fi & Location are strictly required!",
+                                            "Offline Mode active: Bluetooth, Wi-Fi, and Location services are required.",
                                             android.widget.Toast.LENGTH_LONG
                                         ).show()
                                     }

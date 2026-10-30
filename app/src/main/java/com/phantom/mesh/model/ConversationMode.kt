@@ -3,9 +3,9 @@ package com.phantom.mesh.model
 /**
  * Defines the user's selected communication and transport strategy.
  *
- * 1. HYBRID: Both Offline + Online. Does not force radios; shows optional recommendations.
- * 2. ONLINE: Only cloud services (Firebase). Does not force or recommend mesh radios.
- * 3. OFFLINE: Only bluetooth + wifi direct. Enforces mesh radios; strictly does not use cloud.
+ * 1. HYBRID: Dual-channel mode balancing Firebase Cloud with decentralized mesh.
+ * 2. ONLINE: Cloud-exclusive routing via Firebase infrastructure. Radios optional & quiet.
+ * 3. OFFLINE: Local peer-to-peer mesh exclusively. Radios mandatory; cloud strictly bypassed.
  */
 enum class ConversationMode(
     val title: String,
@@ -13,19 +13,19 @@ enum class ConversationMode(
     val description: String
 ) {
     HYBRID(
-        title = "Hybrid Mode (Both Offline + Online)",
-        subtitle = "Dual-channel: Cloud & Mesh both enabled",
-        description = "Uses internet cloud when available, seamlessly switching or bridging to local Bluetooth & Wi-Fi Direct mesh offline. Hardware radios recommended on an optional basis."
+        title = "Hybrid Mode (Offline + Online)",
+        subtitle = "Adaptive Cloud & Mesh Multi-Transport",
+        description = "Intelligently balances Firebase Cloud with decentralized Bluetooth and Wi-Fi Direct mesh networking. Hardware radios (Bluetooth, Wi-Fi, Location) are recommended as an optional enhancement for offline fallback."
     ),
     ONLINE(
-        title = "Online mode (only cloud services)",
-        subtitle = "Strictly cloud routing via Firebase",
-        description = "All messages and calls route strictly through Firebase Cloud. Bluetooth, Wi-Fi, and Location services are never forced, and no radio warnings or recommendations are shown."
+        title = "Online Mode (Cloud Services Only)",
+        subtitle = "High-Speed Firebase Cloud Routing",
+        description = "Exclusively routes all messaging and voice/video calling through secure Firebase Cloud infrastructure. Mesh radios are completely optional, and all hardware warnings or prompts are silenced."
     ),
     OFFLINE(
-        title = "Offline mode (Only bluetooth + wifi direct services)",
-        subtitle = "Strictly local peer-to-peer mesh",
-        description = "Strictly relies on direct Bluetooth & Wi-Fi Direct mesh communication. Cloud services are strictly bypassed even if cellular data or internet is connected. Bluetooth, Wi-Fi, and Location are strictly required."
+        title = "Offline Mode (Bluetooth & Wi-Fi Direct Mesh)",
+        subtitle = "Decentralized Zero-Infrastructure Mesh",
+        description = "Strictly limits communication to peer-to-peer Bluetooth and Wi-Fi Direct mesh protocols without contacting cloud servers, even when an active internet connection is present. Bluetooth, Wi-Fi, and Location services are mandatory."
     );
 
     companion object {
@@ -38,4 +38,3 @@ enum class ConversationMode(
         }
     }
 }
-

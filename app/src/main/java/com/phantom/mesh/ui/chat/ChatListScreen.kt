@@ -325,7 +325,7 @@ fun ChatListScreen(
                                         fontFamily = FontFamily.Monospace
                                     )
                                     Text(
-                                        text = "Bluetooth, Wi-Fi or Location are optional in Hybrid Mode, but recommended for offline mesh backup.",
+                                        text = "Bluetooth, Wi-Fi, and Location are optional in Hybrid Mode, but enabling them allows seamless local mesh fallback if internet access is interrupted.",
                                         color = TextSecondary,
                                         fontSize = 10.sp
                                     )
@@ -375,14 +375,14 @@ fun ChatListScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "OFFLINE MODE: RADIOS MANDATORY",
+                                        text = "OFFLINE MODE: RADIOS REQUIRED",
                                         color = DuressCrimson,
                                         fontSize = 12.sp,
                                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace
                                     )
                                     Text(
-                                        text = "Offline mode strictly relies on device-to-device mesh. Bluetooth, Wi-Fi, and Location MUST be turned ON.",
+                                        text = "Offline mode operates exclusively over local device-to-device mesh. Bluetooth, Wi-Fi, and Location must be active to discover nearby peers.",
                                         color = TextSecondary,
                                         fontSize = 10.sp
                                     )
@@ -448,7 +448,7 @@ fun ChatListScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Offline Mode Active (Mesh only • Cloud strictly bypassed)",
+                                    text = "Offline Mode Active • Local Peer-to-Peer Mesh Only (Cloud Bypassed)",
                                     color = WarningAmber,
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace
